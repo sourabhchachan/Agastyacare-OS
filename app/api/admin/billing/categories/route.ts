@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requirePermission } from "@/lib/auth/serverPermissions";
 import { PERMISSIONS } from "@/lib/auth/permissions";
-import { adminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { CanDo } from "@/components/CanDo";
 import { PERMISSIONS } from "@/lib/auth/permissions";
@@ -43,7 +43,7 @@ export default function PatientsPage() {
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [admittingDeptId, setAdmittingDeptId] = useState("");
 
-  const loadPatients = async () => {
+  const loadPatients = useCallback(async () => {
     const response = await fetch("/api/patients");
     if (!response.ok) {
       showToast("error", await humanizeResponseError(response));
@@ -51,11 +51,11 @@ export default function PatientsPage() {
     }
     const result = (await response.json()) as { patients?: Patient[] };
     setPatients((result.patients ?? []).filter((p) => p.is_active));
-  };
+  }, [showToast]);
 
   useEffect(() => {
     void loadPatients();
-  }, []);
+  }, [loadPatients]);
 
   useEffect(() => {
     const s = createClient();
@@ -80,7 +80,7 @@ export default function PatientsPage() {
       setAvailableBeds(result.beds ?? []);
       setBedId("");
     })();
-  }, [showForm]);
+  }, [showForm, showToast]);
 
   const filteredPatients = useMemo(() => {
     const priorityRank: Record<string, number> = {
