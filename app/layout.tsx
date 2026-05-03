@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { PwaBootstrap } from "@/components/PwaBootstrap";
+import { ToastProvider } from "@/components/feedback/ToastProvider";
 
 export const metadata: Metadata = {
   title: "OS",
@@ -20,8 +21,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-white text-slate-900 antialiased">
-        <PwaBootstrap />
-        {children}
+        <ToastProvider>
+          <PwaBootstrap />
+          {children}
+        </ToastProvider>
       </body>
     </html>
   );

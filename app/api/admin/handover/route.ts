@@ -1,69 +1,44 @@
 import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
-import { requirePermission } from "@/lib/auth/serverPermissions";
+import { requireHandoverAccess } from "@/lib/auth/handoverAccess";
 
+/** Active staff + recent task handover log (last 20). */
 export async function GET() {
-  const auth = await requirePermission("manage_users");
+  const auth = await requireHandoverAccess();
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
-  const [{ data: outgoing }, { data: incoming }, { data: assignments }] = await Promise.all([
-    adminClient.from("staff_users").select("id, full_name, is_active").eq("is_active", true).order("full_name"),
-    adminClient.from("staff_users").select("id, full_name, is_active").eq("is_active", false).order("full_name"),
-    adminClient.from("bed_assignments").select("id, dept_id, assigned_user_id, bed_range_start, bed_range_end"),
+  const [{ data: staff }, { data: logs }] = await Promise.all([
+    adminClient.from("staff_users").select("id, full_name").eq("is_active", true).order("full_name", { ascending: true }),
+    adminClient
+      .from("handover_log")
+      .select("id, from_user_id, to_user_id, item_count, notes, created_at")
+      .order("created_at", { ascending: false })
+      .limit(20),
   ]);
 
-  return NextResponse.json({ outgoing: outgoing ?? [], incoming: incoming ?? [], assignments: assignments ?? [] });
-}
-
-export async function POST(req: Request) {
-  const auth = await requirePermission("manage_users");
-  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
-
-  const body = (await req.json()) as {
-    outgoingUserIds?: string[];
-    incomingUserIds?: string[];
-  };
-
-  const outgoingUserIds = body.outgoingUserIds ?? [];
-  const incomingUserIds = body.incomingUserIds ?? [];
-
-  if (outgoingUserIds.length < 1 || incomingUserIds.length < 1) {
-    return NextResponse.json({ error: "Cannot deactivate without replacement" }, { status: 400 });
+  const ids = new Set<string>();
+  for (const row of logs ?? []) {
+    ids.add(row.from_user_id);
+    ids.add(row.to_user_id);
   }
+  const idList = Array.from(ids);
+  const { data: names } =
+    idList.length > 0
+      ? await adminClient.from("staff_users").select("id, full_name").in("id", idList)
+      : { data: [] as { id: string; full_name: string }[] };
 
-  const primaryIncoming = incomingUserIds[0]!;
-  for (const outId of outgoingUserIds) {
-    await adminClient
-      .from("item_instances")
-      .update({ assigned_user_id: primaryIncoming })
-      .eq("assigned_user_id", outId)
-      .in("status", ["pending", "in_progress"]);
-  }
+  const nameBy = new Map((names ?? []).map((n) => [n.id, n.full_name]));
 
-  const { error: deactivateError } = await adminClient.from("staff_users").update({ is_active: false }).in("id", outgoingUserIds);
-  if (deactivateError) return NextResponse.json({ error: deactivateError.message }, { status: 400 });
+  const recent = (logs ?? []).map((row) => ({
+    id: row.id,
+    from_user_id: row.from_user_id,
+    to_user_id: row.to_user_id,
+    from_name: nameBy.get(row.from_user_id) ?? "Unknown",
+    to_name: nameBy.get(row.to_user_id) ?? "Unknown",
+    item_count: row.item_count,
+    notes: row.notes,
+    created_at: row.created_at,
+  }));
 
-  const { error: activateError } = await adminClient.from("staff_users").update({ is_active: true }).in("id", incomingUserIds);
-  if (activateError) return NextResponse.json({ error: activateError.message }, { status: 400 });
-
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  await adminClient.from("audit_logs").insert({
-    actor_user_id: user?.id ?? null,
-    event: "shift_handover_completed",
-    table_name: "staff_users",
-    record_id: `handover:${Date.now()}`,
-    new_data: {
-      outgoingUserIds,
-      incomingUserIds,
-      itemReassignTo: primaryIncoming,
-      hhmm: new Date().toTimeString().slice(0, 5),
-    },
-  });
-
-  return NextResponse.json({ ok: true, redirectTo: "/admin/bed-assignments" });
+  return NextResponse.json({ staff: staff ?? [], recent });
 }

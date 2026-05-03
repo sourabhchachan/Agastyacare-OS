@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -8,6 +10,7 @@ type BeforeInstallPromptEvent = Event & {
 };
 
 export function PwaBootstrap() {
+  const { run, isPending } = useAsyncAction();
   const [offline, setOffline] = useState(false);
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [showPrompt, setShowPrompt] = useState(false);
@@ -42,11 +45,13 @@ export function PwaBootstrap() {
     setShowPrompt(false);
   };
 
-  const install = async () => {
-    if (!installEvent) return;
-    await installEvent.prompt();
-    await installEvent.userChoice;
-    dismiss();
+  const install = () => {
+    void run("pwa-install", async () => {
+      if (!installEvent) throw new UserFacingError("Install is not available right now.");
+      await installEvent.prompt();
+      await installEvent.userChoice;
+      dismiss();
+    }, { successMessage: "Install prompt finished" });
   };
 
   return (
@@ -70,10 +75,11 @@ export function PwaBootstrap() {
             </button>
             <button
               type="button"
-              onClick={() => void install()}
-              className="min-h-11 flex-1 rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white"
+              onClick={install}
+              disabled={isPending("pwa-install")}
+              className="min-h-11 flex-1 rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
-              Install
+              {isPending("pwa-install") ? "Opening…" : "Install"}
             </button>
           </div>
         </div>

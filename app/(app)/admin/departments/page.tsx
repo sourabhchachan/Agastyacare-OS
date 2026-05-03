@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { CanDo } from "@/components/CanDo";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type Permission = { id: string; code: string; name: string };
 type Department = { id: string; code: string; name: string; description: string | null };
@@ -11,6 +14,7 @@ type Department = { id: string; code: string; name: string; description: string 
 type ExistingDeptPermission = { department_id: string; permission_id: string };
 
 export default function AdminDepartmentsPage() {
+  const { run, isPending } = useAsyncAction();
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [departmentPermissions, setDepartmentPermissions] = useState<Record<string, string[]>>({});
@@ -46,28 +50,48 @@ export default function AdminDepartmentsPage() {
     void loadData();
   }, []);
 
-  const createDepartment = async () => {
-    await fetch("/api/admin/departments", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name, description, permissionIds: selectedPermissionIds }),
-    });
+  const createDepartment = () => {
+    void run(
+      "create-dept",
+      async () => {
+        const response = await fetch("/api/admin/departments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code, name, description, permissionIds: selectedPermissionIds }),
+        });
 
-    setCode("");
-    setName("");
-    setDescription("");
-    setSelectedPermissionIds([]);
-    await loadData();
+        if (!response.ok) {
+          throw new UserFacingError(await humanizeResponseError(response));
+        }
+
+        setCode("");
+        setName("");
+        setDescription("");
+        setSelectedPermissionIds([]);
+        await loadData();
+      },
+      { successMessage: "Department created" }
+    );
   };
 
-  const saveDepartmentPermissions = async (departmentId: string, permissionIds: string[]) => {
-    await fetch("/api/admin/departments", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ departmentId, permissionIds }),
-    });
+  const saveDepartmentPermissions = (departmentId: string, permissionIds: string[]) => {
+    void run(
+      `dept-perm-${departmentId}`,
+      async () => {
+        const response = await fetch("/api/admin/departments", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ departmentId, permissionIds }),
+        });
 
-    await loadData();
+        if (!response.ok) {
+          throw new UserFacingError(await humanizeResponseError(response));
+        }
+
+        await loadData();
+      },
+      { successMessage: null }
+    );
   };
 
   return (
@@ -122,10 +146,12 @@ export default function AdminDepartmentsPage() {
             </div>
 
             <button
-              onClick={() => void createDepartment()}
-              className="w-full rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white"
+              type="button"
+              onClick={createDepartment}
+              disabled={isPending("create-dept")}
+              className="w-full rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
             >
-              Create department
+              {isPending("create-dept") ? "Creating…" : "Create department"}
             </button>
           </div>
         </CanDo>
@@ -148,12 +174,13 @@ export default function AdminDepartmentsPage() {
                           <input
                             type="checkbox"
                             checked={checked}
+                            disabled={isPending(`dept-perm-${department.id}`)}
                             onChange={() => {
                               const next = checked
                                 ? activePermissionIds.filter((id) => id !== permission.id)
                                 : [...activePermissionIds, permission.id];
 
-                              void saveDepartmentPermissions(department.id, next);
+                              saveDepartmentPermissions(department.id, next);
                             }}
                           />
                           {permission.code}

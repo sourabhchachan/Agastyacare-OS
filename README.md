@@ -5,7 +5,7 @@ Mobile-first Hospital Operating System built with Next.js + Supabase.
 ## Phase 1 Foundation Includes
 
 - Supabase SQL migration for users, departments, permissions, user-department mappings, and audit logs
-- Staff login screen with 10-digit ID + 4-digit PIN keypad
+- Staff login screen with 10-digit ID + 6-digit PIN keypad
 - First-login PIN reset flow
 - Mobile app shell with bottom navigation
 - Admin users management: create, activate/deactivate, and Excel bulk import
@@ -45,6 +45,6 @@ The first worksheet should include columns:
 
 - `staffId` (10 digits)
 - `fullName`
-- `pin` (4 digits)
+- `pin` (6 digits)
 - `departmentIds` (comma-separated UUIDs)
 

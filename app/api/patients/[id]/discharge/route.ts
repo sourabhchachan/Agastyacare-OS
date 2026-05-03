@@ -10,7 +10,7 @@ export async function PATCH(_: Request, { params }: { params: { id: string } }) 
   const today = new Date().toISOString().slice(0, 10);
   const { error } = await adminClient
     .from("patients")
-    .update({ is_active: false, discharge_date: today })
+    .update({ is_active: false, discharge_date: today, bed_id: null })
     .eq("id", params.id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
@@ -21,10 +21,9 @@ export async function PATCH(_: Request, { params }: { params: { id: string } }) 
     .update({
       status: "cancelled",
       completed_at: now,
-      remarks: "Patient discharged — recurring instance stopped",
+      remarks: "Patient discharged",
     })
     .eq("patient_id", params.id)
-    .eq("catalogue_type", "recurring")
     .in("status", ["pending", "in_progress"]);
 
   const supabase = await createClient();

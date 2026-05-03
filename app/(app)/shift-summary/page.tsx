@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError, humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type ShiftSummary = {
   completed: Array<{ instance_id: string; step_number: number; time: string; date: string }>;
@@ -11,27 +15,74 @@ type ShiftSummary = {
 };
 
 export default function ShiftSummaryPage() {
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [data, setData] = useState<ShiftSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      const res = await fetch("/api/shift-summary", { cache: "no-store" });
-      if (!res.ok) {
-        setError((await res.json())?.error ?? "Failed to load");
-        return;
-      }
-      setData(await res.json());
-    };
-    void load();
+  const load = useCallback(async () => {
+    setError(null);
+    const res = await fetch("/api/shift-summary", { cache: "no-store" });
+    if (!res.ok) {
+      const msg = await humanizeResponseError(res);
+      setError(msg);
+      throw new UserFacingError(msg);
+    }
+    setData(await res.json());
   }, []);
 
-  if (error) return <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</p>;
+  useEffect(() => {
+    void (async () => {
+      try {
+        await load();
+      } catch (e) {
+        showToast("error", humanizeError(e));
+      }
+    })();
+  }, [load, showToast]);
+
+  const refresh = () => {
+    void run(
+      "shift-summary-refresh",
+      async () => {
+        await load();
+      },
+      { successMessage: "Shift summary updated" }
+    );
+  };
+
+  if (error && !data) {
+    return (
+      <section className="space-y-4">
+        <Link href="/profile" className="text-xs text-[#1B4F8A]">← Profile</Link>
+        <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</p>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={isPending("shift-summary-refresh")}
+          className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-60"
+        >
+          {isPending("shift-summary-refresh") ? "Retrying…" : "Try again"}
+        </button>
+      </section>
+    );
+  }
+
   if (!data) return <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-20 animate-pulse rounded-lg bg-slate-100" />)}</div>;
 
   return (
     <section className="space-y-4">
-      <Link href="/profile" className="text-xs text-[#1B4F8A]">← Profile</Link>
+      <div className="flex items-center justify-between gap-2">
+        <Link href="/profile" className="text-xs text-[#1B4F8A]">← Profile</Link>
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={isPending("shift-summary-refresh")}
+          className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+        >
+          {isPending("shift-summary-refresh") ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
       <h1 className="text-xl font-semibold text-[#1B4F8A]">Shift Summary</h1>
 
       <div className="rounded-lg border border-slate-200 p-3">

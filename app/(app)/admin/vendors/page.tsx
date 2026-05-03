@@ -3,10 +3,16 @@
 import { useEffect, useState } from "react";
 import { CanDo } from "@/components/CanDo";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError, humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type Vendor = { id: string; name: string; category: string | null; contact: string | null };
 
 export default function VendorsPage() {
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [id, setId] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -15,26 +21,40 @@ export default function VendorsPage() {
 
   const loadVendors = async () => {
     const response = await fetch("/api/admin/vendors");
+    if (!response.ok) throw new UserFacingError(await humanizeResponseError(response));
     const result = (await response.json()) as { vendors?: Vendor[] };
     setVendors(result.vendors ?? []);
   };
 
   useEffect(() => {
-    void loadVendors();
-  }, []);
+    void (async () => {
+      try {
+        await loadVendors();
+      } catch (e) {
+        showToast("error", humanizeError(e));
+      }
+    })();
+  }, [showToast]);
 
-  const saveVendor = async () => {
-    await fetch("/api/admin/vendors", {
-      method: id ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, name, category, contact }),
-    });
+  const saveVendor = () => {
+    void run(
+      "vendor-save",
+      async () => {
+        const res = await fetch("/api/admin/vendors", {
+          method: id ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, name, category, contact }),
+        });
+        if (!res.ok) throw new UserFacingError(await humanizeResponseError(res));
 
-    setId(null);
-    setName("");
-    setCategory("");
-    setContact("");
-    await loadVendors();
+        setId(null);
+        setName("");
+        setCategory("");
+        setContact("");
+        await loadVendors();
+      },
+      { successMessage: id ? "Vendor updated" : "Vendor saved" }
+    );
   };
 
   return (
@@ -47,7 +67,14 @@ export default function VendorsPage() {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          <button type="button" onClick={() => void saveVendor()} className="w-full rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white">Save vendor</button>
+          <button
+            type="button"
+            onClick={saveVendor}
+            disabled={isPending("vendor-save")}
+            className="w-full rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {isPending("vendor-save") ? "Saving…" : "Save vendor"}
+          </button>
         </div>
 
         <div className="space-y-2">

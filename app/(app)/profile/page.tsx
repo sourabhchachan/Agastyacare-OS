@@ -4,9 +4,15 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 export default function ProfilePage() {
   const router = useRouter();
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [loginId, setLoginId] = useState("");
@@ -15,46 +21,37 @@ export default function ProfilePage() {
 
   useEffect(() => {
     const load = async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
+      const res = await fetch("/api/auth/context", { cache: "no-store" });
+      if (!res.ok) {
+        showToast("error", await humanizeResponseError(res));
         setLoading(false);
         return;
       }
-
-      const [{ data: staff }, { data: deps }, { data: perms }] = await Promise.all([
-        supabase.from("staff_users").select("full_name, staff_id").eq("id", user.id).maybeSingle(),
-        supabase
-          .from("user_departments")
-          .select("departments(name)")
-          .eq("user_id", user.id),
-        supabase.rpc("current_user_permissions"),
-      ]);
-      setName((staff as { full_name?: string } | null)?.full_name ?? "User");
-      setLoginId((staff as { staff_id?: string } | null)?.staff_id ?? "");
-      setDepartments(
-        (deps ?? [])
-          .map((d) => {
-            const row = d as { departments: { name: string } | { name: string }[] | null };
-            const rel = Array.isArray(row.departments) ? row.departments[0] : row.departments;
-            return rel?.name ?? "";
-          })
-          .filter(Boolean)
-      );
-      setPermissions(
-        (perms ?? []).map((p: { permission_code?: string }) => p.permission_code ?? "").filter(Boolean)
-      );
+      const data = (await res.json()) as {
+        profile?: { fullName?: string; staffId?: string } | null;
+        departments?: string[];
+        permissions?: string[];
+      };
+      setName(data.profile?.fullName ?? "User");
+      setLoginId(data.profile?.staffId ?? "");
+      setDepartments(data.departments ?? []);
+      setPermissions(data.permissions ?? []);
       setLoading(false);
     };
     void load();
-  }, []);
+  }, [showToast]);
 
-  const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push("/login");
+  const handleLogout = () => {
+    void run(
+      "logout",
+      async () => {
+        const supabase = createClient();
+        const { error } = await supabase.auth.signOut();
+        if (error) throw new UserFacingError(error.message);
+        router.push("/login");
+      },
+      { successMessage: "Signed out" }
+    );
   };
 
   return (
@@ -85,10 +82,12 @@ export default function ProfilePage() {
         Shift Summary
       </Link>
       <button
-        onClick={() => void handleLogout()}
-        className="min-h-11 w-full rounded-xl bg-[#1B4F8A] px-4 py-3 text-sm font-semibold text-white"
+        type="button"
+        onClick={handleLogout}
+        disabled={isPending("logout")}
+        className="min-h-11 w-full rounded-xl bg-[#1B4F8A] px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
       >
-        Log out
+        {isPending("logout") ? "Signing out…" : "Log out"}
       </button>
     </section>
   );

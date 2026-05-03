@@ -4,6 +4,10 @@ import * as XLSX from "xlsx";
 import { useEffect, useMemo, useState } from "react";
 import { CanDo } from "@/components/CanDo";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
+import { useToast } from "@/components/feedback/ToastProvider";
 
 type Department = { id: string; name: string };
 type Vendor = { id: string; name: string };
@@ -11,21 +15,27 @@ type SOPOption = { id: string; title: string; kpi?: { title?: string; kra?: { ti
 type Item = {
   id: string;
   name: string;
-  type: "recurring" | "triggered" | "facility";
-  frequency: string;
-  frequency_time: string | null;
-  frequency_day: string | null;
+  is_active: boolean;
+  requires_patient: boolean;
   ordering_dept_id: string | null;
   dispatching_dept_id: string | null;
   vendor_id: string | null;
   billing_flag: boolean;
   unit_cost: number;
-  category: string | null;
   sop_id: string | null;
 };
-type Checkpoint = { id?: string; catalogue_item_id?: string; step_number?: number; dept_id: string; description: string };
+type AssignmentType = "department_pool" | "specific_user";
 
-const CATEGORY_SUGGESTIONS = ["Pharmacy", "Lab", "Food", "Linen", "Procedure", "Facility", "Clinical"];
+type Checkpoint = {
+  id?: string;
+  catalogue_item_id?: string;
+  step_number?: number;
+  client_id: string;
+  dept_id: string;
+  description: string;
+  assignment_type: AssignmentType;
+  assigned_user_id: string;
+};
 
 export default function CataloguePage() {
   const [items, setItems] = useState<Item[]>([]);
@@ -33,30 +43,40 @@ export default function CataloguePage() {
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [sops, setSops] = useState<SOPOption[]>([]);
   const [checkpointsMap, setCheckpointsMap] = useState<Record<string, Checkpoint[]>>({});
+  const [staffByDept, setStaffByDept] = useState<Record<string, Array<{ id: string; full_name: string }>>>({});
 
   const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
   const [nameError, setNameError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
-  const [bulkErrors, setBulkErrors] = useState<Array<{ row: number; errors: string[] }>>([]);
+  const [bulkResult, setBulkResult] = useState<{
+    createdCount: number;
+    failedCount: number;
+    failures: Array<{ row: number; itemName: string; reason: string }>;
+  } | null>(null);
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
-    type: "recurring",
-    frequency: "once",
-    frequency_time: "",
-    frequency_day: "",
+    requires_patient: true,
     sop_id: "",
     ordering_dept_id: "",
     dispatching_dept_id: "",
     vendor_id: "",
     billing_flag: false,
     unit_cost: "0",
-    category: "",
   });
-  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([{ dept_id: "", description: "" }]);
+  const makeClientId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([
+    {
+      client_id: makeClientId(),
+      dept_id: "",
+      description: "",
+      assignment_type: "department_pool",
+      assigned_user_id: "",
+    },
+  ]);
 
   const loadData = async () => {
     const response = await fetch("/api/admin/catalogue");
@@ -77,7 +97,18 @@ export default function CataloguePage() {
     (result.checkpoints ?? []).forEach((checkpoint) => {
       const key = checkpoint.catalogue_item_id;
       if (!map[key]) map[key] = [];
-      map[key].push({ dept_id: checkpoint.dept_id, description: checkpoint.description, step_number: checkpoint.step_number, id: checkpoint.id });
+      map[key].push({
+        client_id: `${checkpoint.id ?? "cp"}-${checkpoint.step_number ?? 0}`,
+        dept_id: checkpoint.dept_id,
+        description: checkpoint.description,
+        step_number: checkpoint.step_number,
+        id: checkpoint.id,
+        assignment_type:
+          (checkpoint as { assignment_type?: string }).assignment_type === "specific_user"
+            ? "specific_user"
+            : "department_pool",
+        assigned_user_id: (checkpoint as { assigned_user_id?: string | null }).assigned_user_id ?? "",
+      });
     });
     setCheckpointsMap(map);
   };
@@ -87,31 +118,30 @@ export default function CataloguePage() {
   }, []);
 
   const filteredItems = useMemo(() => {
-    return items.filter((item) => {
-      const matchSearch = item.name.toLowerCase().includes(search.toLowerCase());
-      const matchType = typeFilter === "all" || item.type === typeFilter;
-      const matchCategory = categoryFilter === "all" || (item.category ?? "").toLowerCase() === categoryFilter.toLowerCase();
-      return matchSearch && matchType && matchCategory;
-    });
-  }, [items, search, typeFilter, categoryFilter]);
+    return items.filter((item) => item.name.toLowerCase().includes(search.toLowerCase()));
+  }, [items, search]);
 
   const resetForm = () => {
     setEditingId(null);
     setForm({
       name: "",
-      type: "recurring",
-      frequency: "once",
-      frequency_time: "",
-      frequency_day: "",
+      requires_patient: true,
       sop_id: "",
       ordering_dept_id: "",
       dispatching_dept_id: "",
       vendor_id: "",
       billing_flag: false,
       unit_cost: "0",
-      category: "",
     });
-    setCheckpoints([{ dept_id: "", description: "" }]);
+    setCheckpoints([
+      {
+        client_id: makeClientId(),
+        dept_id: "",
+        description: "",
+        assignment_type: "department_pool",
+        assigned_user_id: "",
+      },
+    ]);
     setNameError(null);
   };
 
@@ -125,7 +155,7 @@ export default function CataloguePage() {
     setNameError(result.exists ? "Item already exists" : null);
   };
 
-  const saveItem = async () => {
+  const saveItem = () => {
     setSaveMessage(null);
     if (!form.name.trim()) {
       setSaveMessage({ type: "err", text: "Please enter an item name." });
@@ -149,58 +179,108 @@ export default function CataloguePage() {
       });
       return;
     }
-
-    const payload = {
-      ...form,
-      name: form.name.trim(),
-      type: form.type,
-      frequency: form.frequency,
-      frequency_time: form.frequency_time || null,
-      frequency_day: form.frequency_day || null,
-      sop_id: form.sop_id || null,
-      ordering_dept_id: form.ordering_dept_id || null,
-      dispatching_dept_id: form.dispatching_dept_id || null,
-      vendor_id: form.vendor_id || null,
-      unit_cost: form.billing_flag ? Number(form.unit_cost || 0) : 0,
-      billing_flag: form.billing_flag,
-      checkpoints,
-    };
-
-    const response = await fetch("/api/admin/catalogue", {
-      method: editingId ? "PATCH" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(editingId ? { id: editingId, ...payload } : payload),
-    });
-    const result = (await response.json()) as { ok?: boolean; error?: string };
-
-    if (!response.ok) {
-      setSaveMessage({ type: "err", text: result.error ?? "Could not save. Try again." });
+    const badAssign = checkpoints.findIndex(
+      (step) => step.assignment_type === "specific_user" && !step.assigned_user_id.trim()
+    );
+    if (badAssign >= 0) {
+      setSaveMessage({
+        type: "err",
+        text: `Checkpoint ${badAssign + 1}: choose a staff member for “Specific user” assignment.`,
+      });
       return;
     }
 
-    resetForm();
-    setSaveMessage({ type: "ok", text: editingId ? "Item updated." : "Item created." });
-    await loadData();
+    const wasEdit = Boolean(editingId);
+
+    void run(
+      "cat-save",
+      async () => {
+        const payload = {
+          ...form,
+          name: form.name.trim(),
+          requires_patient: form.requires_patient,
+          sop_id: form.sop_id || null,
+          ordering_dept_id: form.ordering_dept_id || null,
+          dispatching_dept_id: form.dispatching_dept_id || null,
+          vendor_id: form.vendor_id || null,
+          unit_cost: form.billing_flag ? Number(form.unit_cost || 0) : 0,
+          billing_flag: form.billing_flag,
+          checkpoints: checkpoints.map((step) => ({
+            dept_id: step.dept_id,
+            description: step.description.trim(),
+            assignment_type: step.assignment_type,
+            assigned_user_id:
+              step.assignment_type === "specific_user" ? step.assigned_user_id.trim() || null : null,
+          })),
+        };
+
+        const response = await fetch("/api/admin/catalogue", {
+          method: editingId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(editingId ? { id: editingId, ...payload } : payload),
+        });
+
+        if (!response.ok) {
+          throw new UserFacingError(await humanizeResponseError(response));
+        }
+
+        resetForm();
+        await loadData();
+      },
+      { successMessage: wasEdit ? "Item updated" : "Item created" }
+    );
   };
 
   const editItem = (item: Item) => {
     setEditingId(item.id);
     setForm({
       name: item.name,
-      type: item.type,
-      frequency: item.frequency,
-      frequency_time: item.frequency_time ?? "",
-      frequency_day: item.frequency_day ?? "",
+      requires_patient: item.requires_patient ?? true,
       sop_id: item.sop_id ?? "",
       ordering_dept_id: item.ordering_dept_id ?? "",
       dispatching_dept_id: item.dispatching_dept_id ?? "",
       vendor_id: item.vendor_id ?? "",
       billing_flag: item.billing_flag,
       unit_cost: String(item.unit_cost ?? 0),
-      category: item.category ?? "",
     });
-    setCheckpoints((checkpointsMap[item.id] ?? []).map((step) => ({ dept_id: step.dept_id, description: step.description }))); 
+    setCheckpoints(
+      (checkpointsMap[item.id] ?? []).map((step) => ({
+        client_id: makeClientId(),
+        dept_id: step.dept_id,
+        description: step.description,
+        assignment_type: step.assignment_type ?? "department_pool",
+        assigned_user_id: step.assigned_user_id ?? "",
+      }))
+    );
     setNameError(null);
+  };
+
+  const toggleActive = (item: Item) => {
+    void run(
+      `cat-toggle-${item.id}`,
+      async () => {
+        const response = await fetch("/api/admin/catalogue", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: item.id, action: "set_active", is_active: !item.is_active }),
+        });
+        if (!response.ok) throw new UserFacingError(await humanizeResponseError(response));
+        await loadData();
+      },
+      { successMessage: item.is_active ? "Item deactivated" : "Item reactivated" }
+    );
+  };
+
+  const ensureStaffLoaded = (deptId: string) => {
+    if (!deptId || staffByDept[deptId]) return;
+    void (async () => {
+      const res = await fetch(
+        `/api/admin/catalogue/staff-by-department?department_id=${encodeURIComponent(deptId)}`
+      );
+      if (!res.ok) return;
+      const body = (await res.json()) as { staff: Array<{ id: string; full_name: string }> };
+      setStaffByDept((prev) => ({ ...prev, [deptId]: body.staff ?? [] }));
+    })();
   };
 
   const moveStep = (index: number, dir: -1 | 1) => {
@@ -215,40 +295,57 @@ export default function CataloguePage() {
 
   const downloadTemplate = () => {
     const worksheet = XLSX.utils.json_to_sheet([
-      { Name: "", Type: "", Frequency: "", "Solution Title": "", "Ordering Dept": "", "Dispatching Dept": "", Vendor: "", Billing: "", "Unit Cost": "", Category: "" },
+      {
+        Name: "",
+        "Requires Patient": "",
+        "Ordering Department": "",
+        "Dispatching Department": "",
+        Vendor: "",
+        Billing: "",
+        "Unit Cost": "",
+      },
     ]);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "ItemCatalogueTemplate");
     XLSX.writeFile(workbook, "agastya-item-catalogue-template.xlsx");
   };
 
-  const handleBulkUpload = async (file: File) => {
-    const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet);
+  const handleBulkUpload = (file: File) => {
+    void run(
+      "cat-bulk",
+      async () => {
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet);
 
-    const response = await fetch("/api/admin/catalogue/bulk/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rows }),
-    });
-    const result = (await response.json()) as { ok: boolean; errors: Array<{ row: number; errors: string[] }> };
+        const importRes = await fetch("/api/admin/catalogue/bulk/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows }),
+        });
+        if (!importRes.ok) throw new UserFacingError(await humanizeResponseError(importRes));
 
-    if (!result.ok) {
-      setBulkErrors(result.errors);
-      return;
-    }
+        const result = (await importRes.json()) as {
+          createdCount: number;
+          failedCount: number;
+          failures: Array<{ row: number; itemName: string; reason: string }>;
+        };
 
-    setBulkErrors([]);
-    await fetch("/api/admin/catalogue/bulk/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rows }),
-    });
-
-    await loadData();
+        setBulkResult({
+          createdCount: result.createdCount,
+          failedCount: result.failedCount,
+          failures: result.failures ?? [],
+        });
+        showToast(
+          "success",
+          `${result.createdCount} items created, ${result.failedCount} rows failed`
+        );
+        await loadData();
+      },
+      { successMessage: null }
+    );
   };
 
   return (
@@ -257,37 +354,47 @@ export default function CataloguePage() {
         <h1 className="text-xl font-semibold text-[#1B4F8A]">Admin - Item Catalogue</h1>
 
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
-          <h2 className="text-sm font-semibold">Search & Filters</h2>
+          <h2 className="text-sm font-semibold">Search</h2>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by item name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          <div className="grid grid-cols-2 gap-2">
-            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-2 text-sm">
-              <option value="all">All types</option>
-              <option value="recurring">Recurring</option>
-              <option value="triggered">Triggered</option>
-              <option value="facility">Facility</option>
-            </select>
-            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-2 text-sm">
-              <option value="all">All categories</option>
-              {CATEGORY_SUGGESTIONS.map((category) => (
-                <option key={category} value={category}>{category}</option>
-              ))}
-            </select>
-          </div>
         </div>
 
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
           <h2 className="text-sm font-semibold">Bulk upload</h2>
+          <p className="text-xs text-slate-600">
+            Columns: <span className="font-medium">Name</span>, <span className="font-medium">Requires Patient</span>{" "}
+            (yes/no), <span className="font-medium">Ordering Department</span>,{" "}
+            <span className="font-medium">Dispatching Department</span> (department names, optional cells empty),{" "}
+            <span className="font-medium">Vendor</span> (optional), <span className="font-medium">Billing</span> (yes/no),{" "}
+            <span className="font-medium">Unit Cost</span> (optional number). Checkpoints must be added after import.
+          </p>
           <button type="button" onClick={downloadTemplate} className="w-full rounded-lg border border-[#1B4F8A] px-3 py-2 text-sm font-semibold text-[#1B4F8A]">Download blank Excel template</button>
-          <input type="file" accept=".xlsx,.xls" className="w-full text-sm" onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleBulkUpload(f); }} />
-          {bulkErrors.length > 0 ? (
-            <div className="rounded-lg bg-rose-50 p-2">
-              <p className="text-xs font-semibold text-rose-700">Upload validation errors</p>
-              {bulkErrors.map((error) => (
-                <p key={error.row} className="text-xs text-rose-700">Row {error.row}: {error.errors.join(", ")}</p>
-              ))}
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            className="w-full text-sm"
+            disabled={isPending("cat-bulk")}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleBulkUpload(f);
+            }}
+          />
+          {bulkResult ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs">
+              <p className="font-semibold text-slate-800">
+                {bulkResult.createdCount} items created, {bulkResult.failedCount} rows failed
+              </p>
+              {bulkResult.failures.length > 0 ? (
+                <ul className="mt-2 max-h-40 list-inside list-disc space-y-1 overflow-y-auto text-slate-700">
+                  {bulkResult.failures.map((f, idx) => (
+                    <li key={`${f.row}-${idx}-${f.reason}`}>
+                      Row {f.row}
+                      {f.itemName ? ` (${f.itemName})` : ""}: {f.reason}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ) : null}
-          <p className="text-xs text-slate-500">Checkpoints must be added individually after bulk upload.</p>
         </div>
 
         <div className="space-y-2 rounded-xl border border-slate-200 p-3">
@@ -305,38 +412,14 @@ export default function CataloguePage() {
           />
           {nameError ? <p className="text-xs text-rose-600">{nameError}</p> : null}
 
-          <div className="grid grid-cols-3 gap-2 text-sm">
-            {(["recurring", "triggered", "facility"] as const).map((type) => (
-              <label key={type} className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-2 capitalize">
-                <input type="radio" name="type" checked={form.type === type} onChange={() => setForm((prev) => ({ ...prev, type }))} />
-                {type}
-              </label>
-            ))}
-          </div>
-
-          <select value={form.frequency} onChange={(e) => setForm((prev) => ({ ...prev, frequency: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
-            <option value="once">Once</option>
-            <option value="1hr">Every 1hr</option>
-            <option value="2hr">Every 2hr</option>
-            <option value="4hr">Every 4hr</option>
-            <option value="6hr">Every 6hr</option>
-            <option value="8hr">Every 8hr</option>
-            <option value="12hr">Every 12hr</option>
-            <option value="OD">OD</option>
-            <option value="BD">BD</option>
-            <option value="TDS">TDS</option>
-            <option value="QID">QID</option>
-            <option value="daily">Daily at specific time</option>
-            <option value="weekly">Weekly on specific day+time</option>
-          </select>
-
-          {(form.frequency === "daily" || form.frequency === "weekly") ? (
-            <input value={form.frequency_time} onChange={(e) => setForm((prev) => ({ ...prev, frequency_time: e.target.value }))} placeholder="Specific time (e.g. 0800)" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          ) : null}
-
-          {form.frequency === "weekly" ? (
-            <input value={form.frequency_day} onChange={(e) => setForm((prev) => ({ ...prev, frequency_day: e.target.value }))} placeholder="Day of week" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          ) : null}
+          <label className="flex items-center justify-between rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            Link to patient
+            <input
+              type="checkbox"
+              checked={form.requires_patient}
+              onChange={(e) => setForm((prev) => ({ ...prev, requires_patient: e.target.checked }))}
+            />
+          </label>
 
           <select value={form.sop_id} onChange={(e) => setForm((prev) => ({ ...prev, sop_id: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
             <option value="">Select Solution</option>
@@ -371,21 +454,85 @@ export default function CataloguePage() {
             <input value={form.unit_cost} onChange={(e) => setForm((prev) => ({ ...prev, unit_cost: e.target.value }))} placeholder="Unit Cost" type="number" min="0" step="0.01" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           ) : null}
 
-          <input list="catalogue-categories" value={form.category} onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))} placeholder="Category" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-          <datalist id="catalogue-categories">
-            {CATEGORY_SUGGESTIONS.map((category) => <option key={category} value={category} />)}
-          </datalist>
-
           <div className="space-y-2 rounded-lg border border-slate-200 p-2">
             <p className="text-xs font-semibold">Checkpoints (minimum 1)</p>
             {checkpoints.map((step, index) => (
-              <div key={`${index}-${step.description}`} className="space-y-1 rounded border border-slate-200 p-2">
+              <div key={step.client_id} className="space-y-1 rounded border border-slate-200 p-2">
                 <p className="text-xs font-medium">Step {index + 1}</p>
-                <select value={step.dept_id} onChange={(e) => setCheckpoints((prev) => prev.map((cp, i) => i === index ? { ...cp, dept_id: e.target.value } : cp))} className="w-full rounded border border-slate-300 px-2 py-1 text-xs">
+                <select
+                  value={step.dept_id}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setCheckpoints((prev) =>
+                      prev.map((cp, i) =>
+                        i === index ? { ...cp, dept_id: v, assigned_user_id: "" } : cp
+                      )
+                    );
+                    if (step.assignment_type === "specific_user" && v) ensureStaffLoaded(v);
+                  }}
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                >
                   <option value="">Department responsible</option>
-                  {departments.map((dept) => <option key={dept.id} value={dept.id}>{dept.name}</option>)}
+                  {departments.map((dept) => (
+                    <option key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </option>
+                  ))}
                 </select>
-                <input value={step.description} onChange={(e) => setCheckpoints((prev) => prev.map((cp, i) => i === index ? { ...cp, description: e.target.value } : cp))} placeholder="Description" className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
+                <label className="block text-xs text-slate-600">
+                  Assignment
+                  <select
+                    value={step.assignment_type}
+                    onChange={(e) => {
+                      const assignment_type = e.target.value === "specific_user" ? "specific_user" : "department_pool";
+                      setCheckpoints((prev) =>
+                        prev.map((cp, i) =>
+                          i === index
+                            ? {
+                                ...cp,
+                                assignment_type,
+                                assigned_user_id: assignment_type === "department_pool" ? "" : cp.assigned_user_id,
+                              }
+                            : cp
+                        )
+                      );
+                      if (assignment_type === "specific_user" && step.dept_id) ensureStaffLoaded(step.dept_id);
+                    }}
+                    className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="department_pool">Department pool (anyone in dept)</option>
+                    <option value="specific_user">Specific user</option>
+                  </select>
+                </label>
+                {step.assignment_type === "specific_user" ? (
+                  <select
+                    value={step.assigned_user_id}
+                    onFocus={() => step.dept_id && ensureStaffLoaded(step.dept_id)}
+                    onChange={(e) =>
+                      setCheckpoints((prev) =>
+                        prev.map((cp, i) => (i === index ? { ...cp, assigned_user_id: e.target.value } : cp))
+                      )
+                    }
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="">{step.dept_id ? "Select staff member" : "Choose department first"}</option>
+                    {(staffByDept[step.dept_id] ?? []).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.full_name || s.id}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                <input
+                  value={step.description}
+                  onChange={(e) =>
+                    setCheckpoints((prev) =>
+                      prev.map((cp, i) => (i === index ? { ...cp, description: e.target.value } : cp))
+                    )
+                  }
+                  placeholder="Description"
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                />
                 <div className="flex gap-1">
                   <button type="button" onClick={() => moveStep(index, -1)} className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs">Up</button>
                   <button type="button" onClick={() => moveStep(index, 1)} className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs">Down</button>
@@ -393,7 +540,24 @@ export default function CataloguePage() {
                 </div>
               </div>
             ))}
-            <button type="button" onClick={() => setCheckpoints((prev) => [...prev, { dept_id: "", description: "" }])} className="w-full rounded border border-[#1B4F8A] px-2 py-1 text-xs font-semibold text-[#1B4F8A]">+ Add checkpoint</button>
+            <button
+              type="button"
+              onClick={() =>
+                setCheckpoints((prev) => [
+                  ...prev,
+                  {
+                    client_id: makeClientId(),
+                    dept_id: "",
+                    description: "",
+                    assignment_type: "department_pool",
+                    assigned_user_id: "",
+                  },
+                ])
+              }
+              className="w-full rounded border border-[#1B4F8A] px-2 py-1 text-xs font-semibold text-[#1B4F8A]"
+            >
+              + Add checkpoint
+            </button>
           </div>
 
           {saveMessage ? (
@@ -406,7 +570,14 @@ export default function CataloguePage() {
           ) : null}
 
           <div className="flex gap-2">
-            <button type="button" onClick={() => void saveItem()} className="flex-1 rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white">{editingId ? "Save item" : "Create item"}</button>
+            <button
+              type="button"
+              onClick={saveItem}
+              disabled={isPending("cat-save")}
+              className="flex-1 rounded-lg bg-[#1B4F8A] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {isPending("cat-save") ? "Saving…" : editingId ? "Save item" : "Create item"}
+            </button>
             {editingId ? (
               <button
                 type="button"
@@ -424,11 +595,29 @@ export default function CataloguePage() {
 
         <div className="space-y-2">
           {filteredItems.map((item) => (
-            <button key={item.id} type="button" onClick={() => editItem(item)} className="w-full rounded-xl border border-slate-200 p-3 text-left">
-              <p className="text-sm font-semibold">{item.name}</p>
-              <p className="text-xs text-slate-600">{item.type} | {item.frequency} | Billing: {item.billing_flag ? "Yes" : "No"} | Cost: {item.unit_cost}</p>
-              <p className="text-xs text-slate-500">Category: {item.category ?? "-"}</p>
-            </button>
+            <div key={item.id} className="w-full rounded-xl border border-slate-200 p-3 text-left">
+              <p className="text-sm font-semibold">{item.name} {!item.is_active ? "(Inactive)" : ""}</p>
+              <p className="text-xs text-slate-600">
+                {item.requires_patient ? "Patient-linked" : "Standalone"} | Billing: {item.billing_flag ? "Yes" : "No"} | Cost: {item.unit_cost}
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => editItem(item)}
+                  className="rounded border border-[#1B4F8A] px-2 py-1 text-xs text-[#1B4F8A]"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleActive(item)}
+                  disabled={isPending(`cat-toggle-${item.id}`)}
+                  className="rounded border border-slate-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-60"
+                >
+                  {isPending(`cat-toggle-${item.id}`) ? "Updating…" : item.is_active ? "Deactivate" : "Reactivate"}
+                </button>
+              </div>
+            </div>
           ))}
         </div>
       </section>

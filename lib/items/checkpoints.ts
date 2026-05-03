@@ -14,10 +14,11 @@ export async function insertCheckpointInstancesForInstance(
   if (defErr) throw defErr;
   if (!defs?.length) throw new Error("Catalogue item has no checkpoint definitions");
 
-  const rows = defs.map((d) => ({
+  const ordered = [...defs].sort((a, b) => a.step_number - b.step_number);
+  const rows = ordered.map((d, index) => ({
     instance_id: instanceId,
     step_number: d.step_number,
-    status: "pending" as const,
+    status: (index === 0 ? "pending" : "locked") as "pending" | "locked",
   }));
 
   const { error } = await admin.from("item_checkpoint_instances").insert(rows);

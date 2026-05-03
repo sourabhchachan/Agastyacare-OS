@@ -3,6 +3,10 @@
 import * as XLSX from "xlsx";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError, humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type Line = {
   id: string;
@@ -35,57 +39,50 @@ function buildQuery(params: Record<string, string | undefined>) {
 }
 
 export default function MasterBillingPage() {
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [lines, setLines] = useState<Line[]>([]);
   const [patients, setPatients] = useState<POpt[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
   const [patientId, setPatientId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
-  const [category, setCategory] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [load, setLoad] = useState(true);
 
   const loadFilters = useCallback(async () => {
-    const [p, c] = await Promise.all([
-      fetch("/api/admin/billing/patients", { cache: "no-store" }),
-      fetch("/api/admin/billing/categories", { cache: "no-store" }),
-    ]);
-    if (p.ok) {
-      const j = (await p.json()) as { patients: POpt[] };
-      setPatients(j.patients ?? []);
+    const p = await fetch("/api/admin/billing/patients", { cache: "no-store" });
+    if (!p.ok) {
+      showToast("error", await humanizeResponseError(p));
+      return;
     }
-    if (c.ok) {
-      const j = (await c.json()) as { categories: string[] };
-      setCategories(j.categories ?? []);
-    }
-  }, []);
+    const j = (await p.json()) as { patients: POpt[] };
+    setPatients(j.patients ?? []);
+  }, [showToast]);
 
   const loadLines = useCallback(async () => {
     setErr(null);
     setLoad(true);
-    const q = buildQuery({
-      patientId: patientId || undefined,
-      from: from || undefined,
-      to: to || undefined,
-      status: status || undefined,
-      category: category || undefined,
-    });
-    const r = await fetch(`/api/admin/billing/lines?${q}`, { cache: "no-store" });
-    if (r.status === 403) {
-      setErr("Forbidden");
+    try {
+      const q = buildQuery({
+        patientId: patientId || undefined,
+        from: from || undefined,
+        to: to || undefined,
+        status: status || undefined,
+      });
+      const r = await fetch(`/api/admin/billing/lines?${q}`, { cache: "no-store" });
+      if (r.status === 403) throw new UserFacingError(await humanizeResponseError(r));
+      if (!r.ok) throw new UserFacingError(await humanizeResponseError(r));
+      const j = (await r.json()) as { lines: Line[] };
+      setLines(j.lines ?? []);
+    } catch (e) {
+      const msg = humanizeError(e);
+      setErr(msg);
+      showToast("error", msg);
+    } finally {
       setLoad(false);
-      return;
     }
-    if (!r.ok) {
-      setErr((await r.json())?.error ?? r.statusText);
-      setLoad(false);
-      return;
-    }
-    const j = (await r.json()) as { lines: Line[] };
-    setLines(j.lines ?? []);
-    setLoad(false);
-  }, [patientId, from, to, status, category]);
+  }, [patientId, from, to, status, showToast]);
 
   useEffect(() => {
     void loadFilters();
@@ -101,67 +98,73 @@ export default function MasterBillingPage() {
   );
 
   const downloadExcel = () => {
-    const header = [
-      "Patient No.",
-      "Item Name",
-      "Quantity",
-      "Unit Cost",
-      "Total Cost",
-      "Ordered By",
-      "Order Date (DD/MM/YY)",
-      "Order Time (HHMM)",
-      "Dispatched By",
-      "Dispatch Date (DD/MM/YY)",
-      "Dispatch Time (HHMM)",
-      "Received By",
-      "Receive Date (DD/MM/YY)",
-      "Receive Time (HHMM)",
-      "Status",
-      "Cancellation Remarks",
-    ];
-    const body = lines.map((r) => [
-      r.patient_number,
-      r.item_name,
-      r.quantity,
-      r.unit_cost,
-      r.total_cost,
-      r.ordered_by_name,
-      r.order_date_formatted,
-      r.order_time,
-      r.dispatched_by_name,
-      r.dispatch_date_formatted,
-      r.dispatch_time,
-      r.received_by_name,
-      r.receive_date_formatted,
-      r.receive_time,
-      r.status,
-      r.cancellation_remarks,
-    ]);
-    const d = new Date();
-    const stamp = `${String(d.getDate()).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}${d.getFullYear()}`;
-    const summaryRow = [
-      "Total",
-      "",
-      "",
-      "",
-      Math.round(totalSum * 100) / 100,
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-      "",
-    ];
-    const aoa = [header, ...body, summaryRow];
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Billing");
-    XLSX.writeFile(wb, `OS_Billing_${stamp}.xlsx`);
+    void run(
+      "billing-master-excel",
+      async () => {
+        const header = [
+          "Patient No.",
+          "Item Name",
+          "Quantity",
+          "Unit Cost",
+          "Total Cost",
+          "Ordered By",
+          "Order Date (DD/MM/YY)",
+          "Order Time (HHMM)",
+          "Dispatched By",
+          "Dispatch Date (DD/MM/YY)",
+          "Dispatch Time (HHMM)",
+          "Received By",
+          "Receive Date (DD/MM/YY)",
+          "Receive Time (HHMM)",
+          "Status",
+          "Cancellation Remarks",
+        ];
+        const body = lines.map((r) => [
+          r.patient_number,
+          r.item_name,
+          r.quantity,
+          r.unit_cost,
+          r.total_cost,
+          r.ordered_by_name,
+          r.order_date_formatted,
+          r.order_time,
+          r.dispatched_by_name,
+          r.dispatch_date_formatted,
+          r.dispatch_time,
+          r.received_by_name,
+          r.receive_date_formatted,
+          r.receive_time,
+          r.status,
+          r.cancellation_remarks,
+        ]);
+        const d = new Date();
+        const stamp = `${String(d.getDate()).padStart(2, "0")}${String(d.getMonth() + 1).padStart(2, "0")}${d.getFullYear()}`;
+        const summaryRow = [
+          "Total",
+          "",
+          "",
+          "",
+          Math.round(totalSum * 100) / 100,
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+        ];
+        const aoa = [header, ...body, summaryRow];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Billing");
+        XLSX.writeFile(wb, `OS_Billing_${stamp}.xlsx`);
+      },
+      { successMessage: "Excel file saved" }
+    );
   };
 
   return (
@@ -176,9 +179,10 @@ export default function MasterBillingPage() {
         <button
           type="button"
           onClick={downloadExcel}
-          className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800"
+          disabled={isPending("billing-master-excel")}
+          className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 disabled:opacity-60"
         >
-          Download Excel
+          {isPending("billing-master-excel") ? "Preparing…" : "Download Excel"}
         </button>
       </div>
 
@@ -218,7 +222,7 @@ export default function MasterBillingPage() {
             />
           </label>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div>
           <label className="block">
             <span className="text-xs text-slate-500">Status</span>
             <select
@@ -232,21 +236,6 @@ export default function MasterBillingPage() {
               <option value="received">received</option>
               <option value="cancelled">cancelled</option>
               <option value="not_done">not_done</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs text-slate-500">Category</span>
-            <select
-              className="mt-0.5 w-full rounded border border-slate-300 p-1.5"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            >
-              <option value="">All</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
             </select>
           </label>
         </div>

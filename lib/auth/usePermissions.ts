@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { hasPermission, type PermissionCode } from "@/lib/auth/permissions";
 
 export function usePermissions() {
@@ -9,17 +8,16 @@ export function usePermissions() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const supabase = createClient();
-
     const loadPermissions = async () => {
-      const { data, error } = await supabase.rpc("current_user_permissions");
-      if (error) {
+      const res = await fetch("/api/auth/context", { cache: "no-store" });
+      if (!res.ok) {
         setPermissions([]);
         setLoading(false);
         return;
       }
+      const data = (await res.json()) as { permissions?: string[] };
       setPermissions(
-        (data ?? []).map((row: { permission_code: string }) => row.permission_code)
+        data.permissions ?? []
       );
       setLoading(false);
     };

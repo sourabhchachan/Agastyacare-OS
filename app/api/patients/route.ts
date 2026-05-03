@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requirePermission } from "@/lib/auth/serverPermissions";
-import { createRecurringItemInstancesOnAdmit } from "@/lib/items/createItemInstances";
 
 async function nextPatientNumber() {
   const year = new Date().getFullYear();
@@ -43,14 +42,39 @@ export async function POST(req: Request) {
   const body = (await req.json()) as {
     patient_number?: string;
     name?: string;
-    bed_number?: string;
+    bed_id?: string;
     priority?: "critical" | "moderate" | "stable";
     admission_date?: string;
     admitting_dept_id?: string;
   };
 
-  if (!body.name || !body.bed_number) {
-    return NextResponse.json({ error: "Name and bed number are required" }, { status: 400 });
+  const bedId = body.bed_id?.trim() ?? "";
+
+  if (!body.name || !bedId) {
+    return NextResponse.json({ error: "Name and bed selection are required" }, { status: 400 });
+  }
+
+  const { data: bed, error: bedErr } = await adminClient
+    .from("beds")
+    .select("id, name, is_active")
+    .eq("id", bedId)
+    .maybeSingle();
+  if (bedErr || !bed) {
+    return NextResponse.json({ error: "Invalid bed selection." }, { status: 400 });
+  }
+  if (!bed.is_active) {
+    return NextResponse.json({ error: "This bed is not available for admission." }, { status: 400 });
+  }
+
+  const { data: occupied } = await adminClient
+    .from("patients")
+    .select("id")
+    .eq("bed_id", bed.id)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (occupied) {
+    return NextResponse.json({ error: "This bed is already occupied." }, { status: 409 });
   }
 
   const generated = await nextPatientNumber();
@@ -61,7 +85,8 @@ export async function POST(req: Request) {
     .insert({
       patient_number: patientNumber,
       name: body.name,
-      bed_number: body.bed_number,
+      bed_id: bed.id,
+      bed_number: bed.name,
       priority: body.priority ?? "stable",
       admission_date: body.admission_date ?? new Date().toISOString().slice(0, 10),
       admitted_by: user?.id ?? null,
@@ -71,19 +96,6 @@ export async function POST(req: Request) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-
-  if (created?.id && body.admitting_dept_id) {
-    try {
-      await createRecurringItemInstancesOnAdmit(adminClient, {
-        patientId: created.id,
-        bedNumber: body.bed_number,
-        admittingDeptId: body.admitting_dept_id,
-        createdBy: user?.id ?? null,
-      });
-    } catch (e) {
-      console.error("recurring items on admit", e);
-    }
-  }
 
   return NextResponse.json({ ok: true, id: created?.id });
 }

@@ -3,8 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
-type Def = { step_number: number; description: string; dept_id: string | null };
+type Def = {
+  step_number: number;
+  description: string;
+  dept_id: string | null;
+  assignment_type?: string | null;
+  assigned_user_id?: string | null;
+};
 type Cp = {
   id: string;
   step_number: number;
@@ -17,6 +27,8 @@ type Cp = {
 export default function ItemDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [loading, setLoading] = useState(true);
   const [itemName, setItemName] = useState("");
   const [dueAt, setDueAt] = useState("");
@@ -37,6 +49,7 @@ export default function ItemDetailPage() {
     const res = await fetch(`/api/items/${params.id}`);
     if (!res.ok) {
       setLoading(false);
+      showToast("error", await humanizeResponseError(res));
       return;
     }
     const data = (await res.json()) as {
@@ -53,45 +66,66 @@ export default function ItemDetailPage() {
     setDefs(data.definitions);
     setCps(data.checkpoints);
     setLoading(false);
-  }, [params.id]);
+  }, [params.id, showToast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const currentStep = (cps ?? []).find((c) => c.status === "pending")?.step_number ?? null;
+  const currentStep =
+    (cps ?? []).find((c) => c.status === "pending")?.step_number ??
+    null;
   const isActive = status === "pending" || status === "in_progress";
 
-  const completeStep = async () => {
-    const res = await fetch(`/api/items/${params.id}/complete-step`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ proofNote: proof || undefined }),
-    });
-    if (res.ok) {
-      setProof("");
-      router.push("/");
-    }
+  const completeStep = () => {
+    void run(
+      "complete-step",
+      async () => {
+        const res = await fetch(`/api/items/${params.id}/complete-step`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ proofNote: proof || undefined }),
+        });
+        if (!res.ok) throw new UserFacingError(await humanizeResponseError(res));
+        setProof("");
+        router.push("/");
+      },
+      { successMessage: "Step completed" }
+    );
   };
 
-  const cancel = async () => {
+  const cancel = () => {
     if (!remarkCancel.trim()) return;
-    const res = await fetch(`/api/items/${params.id}/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remarks: remarkCancel }),
-    });
-    if (res.ok) router.push("/");
+    void run(
+      "cancel-item",
+      async () => {
+        const res = await fetch(`/api/items/${params.id}/cancel`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ remarks: remarkCancel }),
+        });
+        if (!res.ok) throw new UserFacingError(await humanizeResponseError(res));
+        router.push("/");
+      },
+      { successMessage: "Item cancelled" }
+    );
   };
 
-  const notDone = async () => {
+  const notDone = () => {
     if (!remarkNot.trim()) return;
-    const res = await fetch(`/api/items/${params.id}/not-done`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ remarks: remarkNot }),
-    });
-    if (res.ok) router.push("/");
+    void run(
+      "not-done",
+      async () => {
+        const res = await fetch(`/api/items/${params.id}/not-done`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ remarks: remarkNot }),
+        });
+        if (!res.ok) throw new UserFacingError(await humanizeResponseError(res));
+        router.push("/");
+      },
+      { successMessage: "Marked as not done" }
+    );
   };
 
   if (loading) return <p className="text-sm text-slate-600">Loading…</p>;
@@ -115,17 +149,34 @@ export default function ItemDetailPage() {
         {defs.map((d) => {
           const cp = cps.find((c) => c.step_number === d.step_number);
           const done = cp?.status === "completed";
+          const lockedRow = cp?.status === "locked";
           const isCurrent = cp?.status === "pending" && d.step_number === currentStep;
+          const upcomingLocked = !cp && !done;
           return (
             <div
               key={d.step_number}
               className={`rounded-lg border p-2 text-sm ${
-                done ? "border-emerald-200 bg-emerald-50" : isCurrent ? "border-[#1B4F8A] bg-slate-50" : "border-slate-200"
+                done
+                  ? "border-emerald-200 bg-emerald-50"
+                  : isCurrent
+                    ? "border-[#1B4F8A] bg-slate-50"
+                    : upcomingLocked
+                      ? "border-slate-200 border-dashed bg-slate-50/60"
+                      : lockedRow
+                        ? "border-amber-200 bg-amber-50/40"
+                        : "border-slate-200"
               }`}
             >
               <p className="font-medium">
-                {done ? "✓" : isCurrent ? "→" : "·"} Step {d.step_number}: {d.description}
+                {done ? "✓" : isCurrent ? "→" : upcomingLocked ? "○" : lockedRow ? "◆" : "·"} Step {d.step_number}:{" "}
+                {d.description}
               </p>
+              {lockedRow ? (
+                <p className="text-xs text-amber-800">Locked until earlier steps are completed.</p>
+              ) : null}
+              {upcomingLocked ? (
+                <p className="text-xs text-slate-500">Waiting on earlier steps (not yet available in your view).</p>
+              ) : null}
               {done && cp ? (
                 <p className="text-xs text-slate-600">
                   {cp.actor_name ?? "—"} · {cp.actioned_time}
@@ -147,10 +198,11 @@ export default function ItemDetailPage() {
           />
           <button
             type="button"
-            onClick={() => void completeStep()}
-            className="w-full rounded-xl bg-[#1B4F8A] px-4 py-3 text-sm font-semibold text-white"
+            onClick={completeStep}
+            disabled={isPending("complete-step")}
+            className="w-full rounded-xl bg-[#1B4F8A] px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
           >
-            Complete This Step
+            {isPending("complete-step") ? "Submitting…" : "Complete This Step"}
           </button>
         </>
       ) : null}
@@ -170,8 +222,13 @@ export default function ItemDetailPage() {
                 className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                 rows={2}
               />
-              <button type="button" onClick={() => void cancel()} className="w-full rounded bg-rose-600 px-3 py-2 text-sm text-white">
-                Confirm cancel
+              <button
+                type="button"
+                onClick={cancel}
+                disabled={isPending("cancel-item")}
+                className="w-full rounded bg-rose-600 px-3 py-2 text-sm text-white disabled:opacity-60"
+              >
+                {isPending("cancel-item") ? "Cancelling…" : "Confirm cancel"}
               </button>
             </div>
           )}
@@ -188,8 +245,13 @@ export default function ItemDetailPage() {
                 className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
                 rows={2}
               />
-              <button type="button" onClick={() => void notDone()} className="w-full rounded bg-slate-500 px-3 py-2 text-sm text-white">
-                Confirm not done
+              <button
+                type="button"
+                onClick={notDone}
+                disabled={isPending("not-done")}
+                className="w-full rounded bg-slate-500 px-3 py-2 text-sm text-white disabled:opacity-60"
+              >
+                {isPending("not-done") ? "Saving…" : "Confirm not done"}
               </button>
             </div>
           )}

@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   const body = (await req.json()) as { staffId?: string; pin?: string };
   const staffId = body.staffId?.trim() ?? "";
   const pin = body.pin?.trim() ?? "";
-  if (!/^\d{10}$/.test(staffId) || !/^\d{4}$/.test(pin)) {
+  if (!/^\d{10}$/.test(staffId) || !/^\d{6}$/.test(pin)) {
     return NextResponse.json({ error: "Invalid credentials." }, { status: 400 });
   }
 
@@ -41,20 +41,18 @@ export async function POST(req: Request) {
   const { data: staffUser } = await adminClient
     .from("staff_users")
     .select("id, is_active")
-    .eq("staff_id", staffId)
+    .eq("login_id", staffId)
     .maybeSingle();
   if (!staffUser || !staffUser.is_active) {
     return NextResponse.json({ error: "Invalid credentials." }, { status: 401 });
   }
 
-  const conventionalEmail = `${staffId}@agastya-hos.local`;
-  const { data: usersData } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1000 });
-  const matchedUser = usersData.users.find((user) => {
-    const metaStaffId = String(user.user_metadata?.staffId ?? "");
-    const emailPrefix = user.email?.split("@")[0] ?? "";
-    return user.email === conventionalEmail || metaStaffId === staffId || emailPrefix === staffId;
-  });
-  const email = matchedUser?.email ?? conventionalEmail;
+  // staff_users.id references auth.users.id, so this is the most reliable mapping.
+  const { data: authUserResult } = await adminClient.auth.admin.getUserById(staffUser.id);
+  const email = authUserResult.user?.email;
+  if (!email) {
+    return NextResponse.json({ error: "Invalid credentials." }, { status: 401 });
+  }
 
   const supabase = await createClient();
   const { error: signInError } = await supabase.auth.signInWithPassword({ email, password: pin });

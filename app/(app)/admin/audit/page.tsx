@@ -4,6 +4,8 @@ import * as XLSX from "xlsx";
 import { useEffect, useMemo, useState } from "react";
 import { CanDo } from "@/components/CanDo";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
 
 type AuditRow = {
   id: number;
@@ -18,6 +20,7 @@ type AuditRow = {
 };
 
 export default function AdminAuditPage() {
+  const { run, isPending } = useAsyncAction();
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -42,7 +45,7 @@ export default function AdminAuditPage() {
       setError(null);
       const res = await fetch(`/api/admin/audit?${query}`, { cache: "no-store" });
       if (!res.ok) {
-        setError((await res.json())?.error ?? "Failed to load");
+        setError(await humanizeResponseError(res));
         return;
       }
       const data = (await res.json()) as { rows: AuditRow[]; total: number };
@@ -53,20 +56,26 @@ export default function AdminAuditPage() {
   }, [query]);
 
   const exportExcel = () => {
-    const sheetRows = rows.map((r) => ({
-      Date: r.date,
-      Time: r.time,
-      Action: r.action,
-      "Entity Type": r.entity_type,
-      "Entity ID": r.entity_id,
-      Actor: r.actor,
-      "Old Value": JSON.stringify(r.old_value ?? {}),
-      "New Value": JSON.stringify(r.new_value ?? {}),
-    }));
-    const ws = XLSX.utils.json_to_sheet(sheetRows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Audit");
-    XLSX.writeFile(wb, `OS_Audit_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    void run(
+      "audit-export",
+      async () => {
+        const sheetRows = rows.map((r) => ({
+          Date: r.date,
+          Time: r.time,
+          Action: r.action,
+          "Entity Type": r.entity_type,
+          "Entity ID": r.entity_id,
+          Actor: r.actor,
+          "Old Value": JSON.stringify(r.old_value ?? {}),
+          "New Value": JSON.stringify(r.new_value ?? {}),
+        }));
+        const ws = XLSX.utils.json_to_sheet(sheetRows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Audit");
+        XLSX.writeFile(wb, `OS_Audit_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      },
+      { successMessage: "Exported" }
+    );
   };
 
   return (
@@ -77,9 +86,10 @@ export default function AdminAuditPage() {
         <button
           type="button"
           onClick={exportExcel}
-          className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium"
+          disabled={isPending("audit-export")}
+          className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium disabled:opacity-60"
         >
-          Export Excel
+          {isPending("audit-export") ? "Exporting…" : "Export Excel"}
         </button>
       </div>
       <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-200 p-3">

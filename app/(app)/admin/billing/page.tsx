@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError, humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type Summary = {
   totalToday: number;
@@ -18,6 +21,7 @@ type PRow = {
 };
 
 export default function BillingDashboardPage() {
+  const { showToast } = useToast();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [patients, setPatients] = useState<PRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -30,29 +34,26 @@ export default function BillingDashboardPage() {
         fetch("/api/admin/billing/summary", { cache: "no-store" }),
         fetch("/api/admin/billing/patients", { cache: "no-store" }),
       ]);
-      if (a.status === 403) {
-        setErr("Forbidden");
-        setLoad(false);
-        return;
-      }
-      if (!a.ok) {
-        setErr((await a.json())?.error ?? a.statusText);
-        setLoad(false);
-        return;
-      }
-      if (!b.ok) {
-        setErr((await b.json())?.error ?? b.statusText);
-        setLoad(false);
-        return;
-      }
+      if (a.status === 403) throw new UserFacingError(await humanizeResponseError(a));
+      if (!a.ok) throw new UserFacingError(await humanizeResponseError(a));
+      if (!b.ok) throw new UserFacingError(await humanizeResponseError(b));
       const s = (await a.json()) as Summary;
       const p = (await b.json()) as { patients: PRow[] };
       setSummary(s);
       setPatients(p.patients);
-      setLoad(false);
     };
-    void go();
-  }, []);
+    void (async () => {
+      try {
+        await go();
+      } catch (e) {
+        const msg = humanizeError(e);
+        setErr(msg);
+        showToast("error", msg);
+      } finally {
+        setLoad(false);
+      }
+    })();
+  }, [showToast]);
 
   if (load) {
     return <p className="text-slate-600">Loading…</p>;

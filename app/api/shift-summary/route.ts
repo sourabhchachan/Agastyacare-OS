@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient } from "@/lib/supabase/admin";
+import {
+  canUserActOnCurrentCheckpoint,
+  isCheckpointAssignmentAdmin,
+} from "@/lib/items/checkpointAccess";
 
 function startOfShiftIso() {
   const d = new Date();
@@ -21,8 +25,9 @@ export async function GET() {
   }
 
   const since = startOfShiftIso();
+  const isAdmin = await isCheckpointAssignmentAdmin(adminClient, user.id);
 
-  const [completedRes, overdueRes, terminalRes, passedRes] = await Promise.all([
+  const [completedRes, overdueCandidatesRes, terminalRes, passedRes] = await Promise.all([
     adminClient
       .from("item_checkpoint_instances")
       .select("instance_id, step_number, actioned_time, actioned_date")
@@ -31,8 +36,7 @@ export async function GET() {
       .gte("created_at", since),
     adminClient
       .from("item_instances")
-      .select("id, due_at, remarks")
-      .eq("assigned_user_id", user.id)
+      .select("id, due_at, remarks, assigned_user_id, created_by")
       .in("status", ["pending", "in_progress"])
       .lt("due_at", new Date().toISOString()),
     adminClient
@@ -48,10 +52,10 @@ export async function GET() {
       .gte("created_at", since),
   ]);
 
-  if (completedRes.error || overdueRes.error || terminalRes.error || passedRes.error) {
+  if (completedRes.error || overdueCandidatesRes.error || terminalRes.error || passedRes.error) {
     const msg =
       completedRes.error?.message ||
-      overdueRes.error?.message ||
+      overdueCandidatesRes.error?.message ||
       terminalRes.error?.message ||
       passedRes.error?.message ||
       "Failed";
@@ -64,7 +68,20 @@ export async function GET() {
     time: r.actioned_time ?? "",
     date: r.actioned_date ?? "",
   }));
-  const overdue = (overdueRes.data ?? []).map((r) => ({
+  const overdueRows: Array<{ id: string; due_at: string; assigned_user_id: string; created_by: string | null }> =
+    overdueCandidatesRes.data ?? [];
+  const overdueFiltered: typeof overdueRows = [];
+  for (const r of overdueRows) {
+    if (
+      isAdmin ||
+      r.assigned_user_id === user.id ||
+      r.created_by === user.id ||
+      (await canUserActOnCurrentCheckpoint(adminClient, user.id, r.id, false))
+    ) {
+      overdueFiltered.push(r);
+    }
+  }
+  const overdue = overdueFiltered.map((r) => ({
     id: r.id,
     due_at: r.due_at,
   }));

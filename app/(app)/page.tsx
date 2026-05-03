@@ -1,10 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { PERMISSIONS } from "@/lib/auth/permissions";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
 
 type InstanceRow = {
   id: string;
@@ -14,6 +17,15 @@ type InstanceRow = {
   status: string;
   item_name: string;
   patients: { name: string; bed_number: string; priority: string } | null;
+};
+
+/** Row shape from `get_queue_instances` RPC (subset of item_instances). */
+type QueueInstanceRpc = {
+  id: string;
+  due_at: string;
+  patient_id: string | null;
+  catalogue_item_id: string;
+  status: string;
 };
 
 const priorityRank: Record<string, number> = { critical: 0, moderate: 1, stable: 2 };
@@ -62,6 +74,8 @@ function splitNowNext(items: InstanceRow[]) {
 
 export default function HomeQueuePage() {
   const { can, loading: permLoad } = usePermissions();
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
   const [userId, setUserId] = useState<string | null>(null);
   const [rows, setRows] = useState<InstanceRow[]>([]);
   const [nextDesc, setNextDesc] = useState<Record<string, string>>({});
@@ -79,18 +93,14 @@ export default function HomeQueuePage() {
     } = await supabase.auth.getUser();
     if (!user) return;
     setUserId(user.id);
-    const { data: insts, error } = await supabase
-      .from("item_instances")
-      .select("id, due_at, patient_id, catalogue_item_id, status")
-      .eq("assigned_user_id", user.id)
-      .in("status", ["pending", "in_progress"])
-      .order("due_at", { ascending: true });
+    const { data: insts, error } = await supabase.rpc("get_queue_instances");
     if (error) {
       setError(error.message);
+      showToast("error", humanizeError(new Error(error.message)));
       setLoading(false);
       return;
     }
-    const base = insts ?? [];
+    const base = (insts ?? []) as QueueInstanceRpc[];
     const catIds = Array.from(new Set(base.map((i) => i.catalogue_item_id)));
     const patIds = Array.from(
       new Set(base.map((i) => i.patient_id).filter(Boolean))
@@ -156,26 +166,31 @@ export default function HomeQueuePage() {
     }
     setNextDesc(desc);
     setLoading(false);
-  }, []);
+  }, [showToast]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  const loadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     if (!userId) return;
     const supabase = createClient();
+    const debounced = () => {
+      if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
+      loadDebounceRef.current = setTimeout(() => {
+        loadDebounceRef.current = null;
+        void load();
+      }, 450);
+    };
     const channel = supabase
       .channel("item_instances_queue")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "item_instances", filter: `assigned_user_id=eq.${userId}` },
-        () => {
-          void load();
-        }
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_instances" }, debounced)
+      .on("postgres_changes", { event: "*", schema: "public", table: "item_checkpoint_instances" }, debounced)
       .subscribe();
     return () => {
+      if (loadDebounceRef.current) clearTimeout(loadDebounceRef.current);
       void supabase.removeChannel(channel);
     };
   }, [userId, load]);
@@ -243,7 +258,13 @@ export default function HomeQueuePage() {
       }}
       onTouchEnd={() => {
         if (pullDistance > 80) {
-          void load();
+          void run(
+            "queue-refresh",
+            async () => {
+              await load();
+            },
+            { successMessage: "Queue updated" }
+          );
         }
         setPullStartY(null);
         setPullDistance(0);
@@ -259,14 +280,31 @@ export default function HomeQueuePage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void load()}
-            className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700"
+            onClick={() =>
+              void run(
+                "queue-refresh",
+                async () => {
+                  await load();
+                },
+                { successMessage: "Queue updated" }
+              )
+            }
+            disabled={isPending("queue-refresh") || loading}
+            className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
           >
-            Refresh
+            {isPending("queue-refresh") || loading ? "Refreshing…" : "Refresh"}
           </button>
           {!permLoad && can(PERMISSIONS.RAISE_ITEMS) ? (
             <Link href="/raise-item" className="min-h-11 rounded-lg px-3 py-2 text-xs font-semibold text-[#1B4F8A]">
             Raise
+            </Link>
+          ) : null}
+          {!permLoad && can(PERMISSIONS.RAISE_ITEMS) ? (
+            <Link
+              href="/my-raised-items"
+              className="min-h-11 rounded-lg px-3 py-2 text-xs font-semibold text-slate-800 border border-slate-300"
+            >
+              My Raised Items
             </Link>
           ) : null}
         </div>

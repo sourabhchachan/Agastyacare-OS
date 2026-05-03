@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeError, humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 type Line = {
   id: string;
@@ -16,6 +19,7 @@ type Line = {
 };
 
 export default function PatientBillingPage() {
+  const { showToast } = useToast();
   const params = useParams();
   const id = typeof params.id === "string" ? params.id : "";
   const [lines, setLines] = useState<Line[]>([]);
@@ -31,16 +35,8 @@ export default function PatientBillingPage() {
         `/api/admin/billing/lines?${new URLSearchParams({ patientId: id })}`,
         { cache: "no-store" }
       );
-      if (r.status === 403) {
-        setErr("Forbidden");
-        setLoad(false);
-        return;
-      }
-      if (!r.ok) {
-        setErr((await r.json())?.error ?? r.statusText);
-        setLoad(false);
-        return;
-      }
+      if (r.status === 403) throw new UserFacingError(await humanizeResponseError(r));
+      if (!r.ok) throw new UserFacingError(await humanizeResponseError(r));
       const j = (await r.json()) as {
         lines: Line[];
         patient: { patient_number: string; name: string } | null;
@@ -55,10 +51,19 @@ export default function PatientBillingPage() {
               }
             : null)
       );
-      setLoad(false);
     };
-    void go();
-  }, [id]);
+    void (async () => {
+      try {
+        await go();
+      } catch (e) {
+        const msg = humanizeError(e);
+        setErr(msg);
+        showToast("error", msg);
+      } finally {
+        setLoad(false);
+      }
+    })();
+  }, [id, showToast]);
 
   if (load) {
     return <p className="text-slate-600">Loading…</p>;

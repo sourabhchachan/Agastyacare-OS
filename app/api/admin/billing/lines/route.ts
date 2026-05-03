@@ -25,7 +25,7 @@ type LineRow = {
   status: string;
   cancellation_remarks: string | null;
   patients: { patient_number: string; name: string } | { patient_number: string; name: string }[] | null;
-  item_catalogue: { name: string; category: string | null } | { name: string; category: string | null }[] | null;
+  item_catalogue: { name: string } | { name: string }[] | null;
 };
 
 function oneRel<T>(v: T | T[] | null | undefined): T | null {
@@ -50,7 +50,6 @@ export async function GET(req: Request) {
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
   const statusF = url.searchParams.get("status");
-  const categoryF = url.searchParams.get("category");
 
   let q = adminClient
     .from("bill_lines")
@@ -62,7 +61,7 @@ export async function GET(req: Request) {
     received_by, receive_date, receive_time,
     status, cancellation_remarks,
     patients(patient_number, name),
-    item_catalogue(name, category)
+    item_catalogue(name)
   `
     )
     .order("order_date", { ascending: false });
@@ -79,32 +78,6 @@ export async function GET(req: Request) {
   if (statusF) {
     q = q.eq("status", statusF);
   }
-  if (categoryF) {
-    const { data: catRows } = await adminClient
-      .from("item_catalogue")
-      .select("id")
-      .eq("category", categoryF);
-    const cids = (catRows ?? []).map((c) => (c as { id: string }).id);
-    if (cids.length === 0) {
-      let patientWhenFiltered: { patient_number: string; name: string } | null = null;
-      if (patientId) {
-        const { data: pat } = await adminClient
-          .from("patients")
-          .select("patient_number, name")
-          .eq("id", patientId)
-          .maybeSingle();
-        if (pat) {
-          patientWhenFiltered = {
-            patient_number: (pat as { patient_number: string }).patient_number,
-            name: (pat as { name: string }).name,
-          };
-        }
-      }
-      return NextResponse.json({ lines: [], patient: patientWhenFiltered });
-    }
-    q = q.in("catalogue_item_id", cids);
-  }
-
   const { data, error: e1 } = await q;
   if (e1) {
     return NextResponse.json({ error: e1.message }, { status: 400 });
@@ -158,7 +131,6 @@ export async function GET(req: Request) {
       patient_number: p?.patient_number ?? "—",
       patient_name: p?.name ?? "",
       item_name: ic?.name ?? "—",
-      category: ic?.category ?? null,
       quantity: qn,
       unit_cost: u,
       total_cost: lineCost(qn, u),

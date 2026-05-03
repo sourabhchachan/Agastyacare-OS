@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient } from "@/lib/supabase/admin";
 import { updateBillLineOnInstanceTerminal } from "@/lib/billing/billLines";
+import {
+  canUserActOnCurrentCheckpoint,
+  canUserViewItemInstance,
+  isCheckpointAssignmentAdmin,
+} from "@/lib/items/checkpointAccess";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const supabase = await createClient();
@@ -17,12 +22,32 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   const { data: inst, error: e1 } = await adminClient
     .from("item_instances")
-    .select("id, status, assigned_user_id")
+    .select("id, status, assigned_user_id, created_by")
     .eq("id", params.id)
     .single();
   if (e1 || !inst) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  if (inst.assigned_user_id !== user.id) {
+
+  const isAdmin = await isCheckpointAssignmentAdmin(adminClient, user.id);
+  const readable = await canUserViewItemInstance(
+    adminClient,
+    user.id,
+    { id: inst.id, assigned_user_id: inst.assigned_user_id, created_by: inst.created_by },
+    isAdmin
+  );
+  if (!readable) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const canAct = await canUserActOnCurrentCheckpoint(adminClient, user.id, inst.id, isAdmin);
+  const canCancel =
+    isAdmin ||
+    inst.assigned_user_id === user.id ||
+    inst.created_by === user.id ||
+    canAct;
+  if (!canCancel) {
+    return NextResponse.json(
+      { error: "You do not have permission to cancel this item for this workflow step." },
+      { status: 403 }
+    );
   }
   if (!["pending", "in_progress"].includes(inst.status)) {
     return NextResponse.json({ error: "Item not cancellable" }, { status: 400 });

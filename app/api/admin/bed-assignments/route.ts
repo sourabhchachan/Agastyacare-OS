@@ -7,16 +7,22 @@ export async function GET() {
   const auth = await requirePermission("manage_users");
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
-  const [{ data: departments }, { data: users }, { data: assignments }] = await Promise.all([
+  const [{ data: departments }, { data: users }, { data: assignments }, { data: userDepartments }] = await Promise.all([
     adminClient.from("departments").select("id, name").order("name"),
     adminClient.from("staff_users").select("id, full_name, is_active").eq("is_active", true).order("full_name"),
     adminClient
       .from("bed_assignments")
       .select("id, dept_id, assigned_user_id, bed_range_start, bed_range_end, assigned_at")
       .order("assigned_at", { ascending: false }),
+    adminClient.from("user_departments").select("user_id, department_id"),
   ]);
 
-  return NextResponse.json({ departments: departments ?? [], users: users ?? [], assignments: assignments ?? [] });
+  return NextResponse.json({
+    departments: departments ?? [],
+    users: users ?? [],
+    assignments: assignments ?? [],
+    userDepartments: userDepartments ?? [],
+  });
 }
 
 export async function POST(req: Request) {

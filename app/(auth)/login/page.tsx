@@ -2,57 +2,69 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useToast } from "@/components/feedback/ToastProvider";
+import { humanizeResponseError } from "@/lib/feedback/humanizeError";
+import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
+import { UserFacingError } from "@/lib/feedback/userFacingError";
 
 const keypad = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "del"];
 
 export default function LoginPage() {
   const [staffId, setStaffId] = useState("");
   const [pin, setPin] = useState("");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const { showToast } = useToast();
+  const { run, isPending } = useAsyncAction();
 
   const updatePin = (key: string) => {
     if (key === "clear") return setPin("");
     if (key === "del") return setPin((prev) => prev.slice(0, -1));
-    if (pin.length >= 4) return;
+    if (pin.length >= 6) return;
     setPin((prev) => prev + key);
   };
 
-  const handleLogin = async () => {
+  const handleLogin = () => {
     if (!/^\d{10}$/.test(staffId)) {
       setError("Enter a valid 10-digit ID.");
       return;
     }
-    if (!/^\d{4}$/.test(pin)) {
-      setError("Enter a valid 4-digit PIN.");
+    if (!/^\d{6}$/.test(pin)) {
+      setError("Enter a valid 6-digit PIN.");
       return;
     }
 
     setError(null);
-    setLoading(true);
 
-    const loginResponse = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ staffId, pin }),
-    });
+    void run(
+      "login",
+      async () => {
+        const loginResponse = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ staffId, pin }),
+        });
 
-    const loginResult = (await loginResponse.json()) as { error?: string; mustChangePin?: boolean };
-    if (!loginResponse.ok) {
-      setError(loginResult.error ?? "Invalid credentials.");
-      setLoading(false);
-      return;
-    }
+        const loginResult = (await loginResponse.json().catch(() => ({}))) as {
+          error?: string;
+          mustChangePin?: boolean;
+        };
 
-    setLoading(false);
+        if (!loginResponse.ok) {
+          throw new UserFacingError(await humanizeResponseError(loginResponse));
+        }
 
-    if (loginResult.mustChangePin) {
-      router.push("/change-pin");
-      return;
-    }
+        if (loginResult.mustChangePin) {
+          showToast("success", "Please set a new PIN to continue.");
+          router.push("/change-pin");
+          return;
+        }
 
-    router.push("/");
+        showToast("success", "Signed in");
+        router.push("/");
+      },
+      { successMessage: null }
+    );
   };
 
   return (
@@ -70,7 +82,7 @@ export default function LoginPage() {
         />
 
         <div className="rounded-xl border border-slate-300 px-4 py-3 text-center text-2xl tracking-[0.5rem]">
-          {"*".repeat(pin.length).padEnd(4, "-")}
+          {"*".repeat(pin.length).padEnd(6, "-")}
         </div>
 
         <div className="grid grid-cols-3 gap-2">
@@ -79,7 +91,8 @@ export default function LoginPage() {
               key={key}
               type="button"
               onClick={() => updatePin(key)}
-              className="rounded-xl border border-slate-300 px-3 py-4 text-base font-medium capitalize active:scale-[0.99]"
+              disabled={isPending("login")}
+              className="rounded-xl border border-slate-300 px-3 py-4 text-base font-medium capitalize active:scale-[0.99] disabled:opacity-50"
             >
               {key}
             </button>
@@ -90,11 +103,11 @@ export default function LoginPage() {
 
         <button
           type="button"
-          onClick={() => void handleLogin()}
-          disabled={loading}
+          onClick={handleLogin}
+          disabled={isPending("login")}
           className="w-full rounded-xl bg-[#1B4F8A] px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
         >
-          {loading ? "Signing in..." : "Sign in"}
+          {isPending("login") ? "Signing in…" : "Sign in"}
         </button>
       </div>
     </main>

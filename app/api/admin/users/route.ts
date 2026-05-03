@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/supabase/admin";
 import { requirePermission } from "@/lib/auth/serverPermissions";
+import { allocateUniqueStaffId } from "@/lib/users/allocateStaffId";
+import { hasDuplicateStaffInDepartments } from "@/lib/users/staffDuplicateCheck";
 
 const domain = "agastya-hos.local";
+const DEFAULT_PIN = "000000";
 
 export async function POST(req: Request) {
   const auth = await requirePermission("admin.users.manage");
@@ -11,21 +14,29 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const { staffId, fullName, pin, departmentIds = [] } = body as {
-    staffId: string;
+  const { fullName, departmentIds = [] } = body as {
     fullName: string;
-    pin: string;
     departmentIds?: string[];
   };
 
-  if (!/^\d{10}$/.test(staffId) || !/^\d{4}$/.test(pin) || !fullName) {
+  const nameTrimmed = typeof fullName === "string" ? fullName.trim() : "";
+  if (!nameTrimmed) {
     return NextResponse.json({ error: "Invalid input" }, { status: 400 });
   }
 
+  const deptIds = Array.isArray(departmentIds) ? departmentIds.filter((id): id is string => typeof id === "string") : [];
+  if (await hasDuplicateStaffInDepartments(adminClient, nameTrimmed, deptIds)) {
+    return NextResponse.json(
+      { error: "A user with this name already exists in this department" },
+      { status: 400 }
+    );
+  }
+
+  const staffId = await allocateUniqueStaffId(adminClient);
   const email = `${staffId}@${domain}`;
   const { data: createdAuthUser, error: authCreateError } = await adminClient.auth.admin.createUser({
     email,
-    password: pin,
+    password: DEFAULT_PIN,
     email_confirm: true,
     user_metadata: { staffId },
   });
@@ -38,7 +49,8 @@ export async function POST(req: Request) {
   const { error: profileError } = await adminClient.from("staff_users").insert({
     id: userId,
     staff_id: staffId,
-    full_name: fullName,
+    login_id: staffId,
+    full_name: nameTrimmed,
     must_change_pin: true,
     is_active: true,
   });
@@ -48,10 +60,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: profileError.message }, { status: 400 });
   }
 
-  if (departmentIds.length > 0) {
-    const rows = departmentIds.map((departmentId) => ({ user_id: userId, department_id: departmentId }));
+  if (deptIds.length > 0) {
+    const rows = deptIds.map((departmentId) => ({ user_id: userId, department_id: departmentId }));
     const { error: deptError } = await adminClient.from("user_departments").insert(rows);
     if (deptError) {
+      await adminClient.auth.admin.deleteUser(userId);
       return NextResponse.json({ error: deptError.message }, { status: 400 });
     }
   }
