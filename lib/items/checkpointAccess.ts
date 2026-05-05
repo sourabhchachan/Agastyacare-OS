@@ -57,15 +57,25 @@ export async function canUserActOnCurrentCheckpoint(
 
   const { data: cps } = await admin
     .from("item_checkpoint_instances")
-    .select("step_number, status")
+    .select("step_number, status, department_id, assigned_user_id")
     .eq("instance_id", instanceId)
     .order("step_number", { ascending: true });
   const pending = findCurrentPendingCheckpoint((cps ?? []) as CheckpointInstanceRow[]);
   if (!pending) return false;
+  if (pending.assigned_user_id) return pending.assigned_user_id === userId;
+  if (pending.department_id) {
+    const { data: ud } = await admin
+      .from("user_departments")
+      .select("user_id")
+      .eq("user_id", userId)
+      .eq("department_id", pending.department_id)
+      .maybeSingle();
+    return Boolean(ud);
+  }
 
   const { data: def } = await admin
     .from("item_checkpoint_definitions")
-    .select("step_number, assignment_type, assigned_user_id, dept_id")
+    .select("step_number, assignment_type, assigned_user_id, dept_id, department_id")
     .eq("catalogue_item_id", inst.catalogue_item_id)
     .eq("step_number", pending.step_number)
     .maybeSingle();
@@ -76,12 +86,13 @@ export async function canUserActOnCurrentCheckpoint(
   if (at === "specific_user") {
     return row.assigned_user_id === userId;
   }
-  if (!row.dept_id) return false;
+  const deptId = row.department_id ?? row.dept_id;
+  if (!deptId) return false;
   const { data: ud } = await admin
     .from("user_departments")
     .select("user_id")
     .eq("user_id", userId)
-    .eq("department_id", row.dept_id)
+    .eq("department_id", deptId)
     .maybeSingle();
   return Boolean(ud);
 }

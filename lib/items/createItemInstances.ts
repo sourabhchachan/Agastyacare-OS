@@ -67,7 +67,12 @@ export async function createRecurringItemInstancesOnAdmit(
         .single();
       if (e2) throw e2;
       if (ins) {
-        await insertCheckpointInstancesForInstance(admin, ins.id, cat.id);
+        await insertCheckpointInstancesForInstance(admin, ins.id, cat.id, {
+          fallbackDepartmentId: cat.dispatching_dept_id,
+          defaultAssignedUserId: assignee,
+          patientId: params.patientId,
+          bedNumber: params.bedNumber,
+        });
         await createBillLineForBilledInstance(admin, {
           instanceId: ins.id,
           patientId: params.patientId,
@@ -218,7 +223,12 @@ export async function createOrderedItemInstances(
       .single();
     if (e3) throw e3;
     if (ins) {
-      await insertCheckpointInstancesForInstance(admin, ins.id, cat.id);
+      await insertCheckpointInstancesForInstance(admin, ins.id, cat.id, {
+        fallbackDepartmentId: cat.dispatching_dept_id,
+        defaultAssignedUserId: assignee,
+        patientId: patient?.id ?? null,
+        bedNumber: patient?.bed_number ?? null,
+      });
       await createBillLineForBilledInstance(admin, {
         instanceId: ins.id,
         patientId: patient?.id ?? null,
@@ -286,7 +296,9 @@ export async function createFacilityItemInstance(
     .single();
   if (e2) throw e2;
   if (ins) {
-    await insertCheckpointInstancesForInstance(admin, ins.id, cat.id);
+    await insertCheckpointInstancesForInstance(admin, ins.id, cat.id, {
+      defaultAssignedUserId: params.assignedUserId,
+    });
     await createBillLineForBilledInstance(admin, {
       instanceId: ins.id,
       patientId: null,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient } from "@/lib/supabase/admin";
 import { updateBillLineAfterCheckpointStep } from "@/lib/billing/billLines";
+import { findFirstActiveUserInDepartment, findUserIdForBedInDepartment } from "@/lib/items/bedAssignment";
 import {
   canUserActOnCurrentCheckpoint,
   canUserViewItemInstance,
@@ -128,14 +129,54 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       .eq("id", instanceId);
   } else {
     const nextStep = pendingRow.step_number + 1;
+    const [{ data: nextDef }, { data: cat }, { data: patient }] = await Promise.all([
+      adminClient
+        .from("item_checkpoint_definitions")
+        .select("dept_id, department_id, assigned_user_id")
+        .eq("catalogue_item_id", inst.catalogue_item_id)
+        .eq("step_number", nextStep)
+        .maybeSingle(),
+      adminClient
+        .from("item_catalogue")
+        .select("dispatching_dept_id")
+        .eq("id", inst.catalogue_item_id)
+        .maybeSingle(),
+      inst.patient_id
+        ? adminClient.from("patients").select("id, bed_number").eq("id", inst.patient_id).maybeSingle()
+        : Promise.resolve({ data: null as { id: string; bed_number: string } | null }),
+    ]);
+    const routeDeptId =
+      (nextDef as { department_id?: string | null; dept_id?: string | null } | null)?.department_id ??
+      (nextDef as { department_id?: string | null; dept_id?: string | null } | null)?.dept_id ??
+      cat?.dispatching_dept_id ??
+      null;
+    let routeUserId =
+      (nextDef as { assigned_user_id?: string | null } | null)?.assigned_user_id ?? null;
+    if (!routeUserId && routeDeptId) {
+      if (inst.patient_id && patient?.bed_number) {
+        routeUserId = await findUserIdForBedInDepartment(adminClient, routeDeptId, patient.bed_number);
+      }
+      if (!routeUserId) {
+        routeUserId = await findFirstActiveUserInDepartment(adminClient, routeDeptId);
+      }
+    }
+    if (!routeUserId) routeUserId = inst.assigned_user_id;
+
     await adminClient
       .from("item_checkpoint_instances")
-      .update({ status: "pending" })
+      .update({
+        status: "pending",
+        department_id: routeDeptId,
+        assigned_user_id: routeUserId,
+      })
       .eq("instance_id", instanceId)
       .eq("step_number", nextStep)
       .eq("status", "locked");
 
-    await adminClient.from("item_instances").update({ status: "in_progress" }).eq("id", instanceId);
+    await adminClient
+      .from("item_instances")
+      .update({ status: "in_progress", assigned_user_id: routeUserId })
+      .eq("id", instanceId);
   }
 
   await adminClient.from("audit_logs").insert({

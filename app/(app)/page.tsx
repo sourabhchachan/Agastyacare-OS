@@ -16,6 +16,7 @@ type InstanceRow = {
   catalogue_item_id: string;
   status: string;
   item_name: string;
+  sub_task_name: string;
   patients: { name: string; bed_number: string; priority: string } | null;
 };
 
@@ -26,6 +27,14 @@ type QueueInstanceRpc = {
   patient_id: string | null;
   catalogue_item_id: string;
   status: string;
+};
+
+type PendingCheckpointRow = {
+  instance_id: string;
+  step_number: number;
+  status: string;
+  department_id: string | null;
+  assigned_user_id: string | null;
 };
 
 const priorityRank: Record<string, number> = { critical: 0, moderate: 1, stable: 2 };
@@ -93,6 +102,11 @@ export default function HomeQueuePage() {
     } = await supabase.auth.getUser();
     if (!user) return;
     setUserId(user.id);
+    const { data: userDepts } = await supabase
+      .from("user_departments")
+      .select("department_id")
+      .eq("user_id", user.id);
+    const userDeptSet = new Set((userDepts ?? []).map((d) => d.department_id));
     const { data: insts, error } = await supabase.rpc("get_queue_instances");
     if (error) {
       setError(error.message);
@@ -124,11 +138,12 @@ export default function HomeQueuePage() {
       catalogue_item_id: i.catalogue_item_id,
       status: i.status,
       item_name: catBy.get(i.catalogue_item_id) ?? "Item",
+      sub_task_name: "",
       patients: i.patient_id ? patBy.get(i.patient_id) ?? null : null,
     }));
-    setRows(list);
 
     if (list.length === 0) {
+      setRows([]);
       setNextDesc({});
       setLoading(false);
       return;
@@ -136,7 +151,7 @@ export default function HomeQueuePage() {
     const ids = list.map((r) => r.id);
     const { data: cps } = await supabase
       .from("item_checkpoint_instances")
-      .select("instance_id, step_number, status")
+      .select("instance_id, step_number, status, department_id, assigned_user_id")
       .in("instance_id", ids)
       .eq("status", "pending");
     const { data: defs } = await supabase
@@ -148,22 +163,35 @@ export default function HomeQueuePage() {
       if (!defByCat.has(d.catalogue_item_id)) defByCat.set(d.catalogue_item_id, new Map());
       defByCat.get(d.catalogue_item_id)!.set(d.step_number, d.description);
     }
-    const pendingByInst = new Map<string, number>();
-    for (const c of cps ?? []) {
+    const pendingByInst = new Map<string, PendingCheckpointRow>();
+    for (const c of (cps ?? []) as PendingCheckpointRow[]) {
       const cur = pendingByInst.get(c.instance_id);
-      if (cur === undefined || c.step_number < cur) {
-        pendingByInst.set(c.instance_id, c.step_number);
+      if (!cur || c.step_number < cur.step_number) {
+        pendingByInst.set(c.instance_id, c);
       }
     }
     const desc: Record<string, string> = {};
-    for (const r of list) {
-      const step = pendingByInst.get(r.id);
-      if (step === undefined) {
+    const filtered = list.filter((r) => {
+      const pending = pendingByInst.get(r.id);
+      if (!pending) return false;
+      if (pending.assigned_user_id) return pending.assigned_user_id === user.id;
+      if (pending.department_id) return userDeptSet.has(pending.department_id);
+      return true;
+    });
+    const listWithSubtasks = filtered.map((r) => {
+      const pending = pendingByInst.get(r.id);
+      const step = pending?.step_number;
+      const taskName = step === undefined ? "" : defByCat.get(r.catalogue_item_id)?.get(step) ?? "";
+      return { ...r, sub_task_name: taskName };
+    });
+    for (const r of listWithSubtasks) {
+      if (!r.sub_task_name) {
         desc[r.id] = "";
         continue;
       }
-      desc[r.id] = defByCat.get(r.catalogue_item_id)?.get(step) ?? "";
+      desc[r.id] = r.sub_task_name;
     }
+    setRows(listWithSubtasks);
     setNextDesc(desc);
     setLoading(false);
   }, [showToast]);
@@ -217,7 +245,8 @@ export default function HomeQueuePage() {
           overdue ? "border-l-4 border-l-red-600 border-slate-200" : "border-slate-200"
         }`}
       >
-        <p className="text-sm font-semibold text-slate-900">{r.item_name}</p>
+        <p className="text-sm font-semibold text-slate-900">{r.sub_task_name || r.item_name}</p>
+        <p className="text-xs text-slate-600">Item: {r.item_name}</p>
         {r.patients ? (
           <p className="text-xs text-slate-600">
             {badge} {r.patients.name} · Bed {r.patients.bed_number}
@@ -229,7 +258,7 @@ export default function HomeQueuePage() {
           Due {due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           {od ? <span className="font-medium"> · {od}</span> : null}
         </p>
-        {nextDesc[r.id] ? <p className="mt-1 text-xs text-slate-600">Next: {nextDesc[r.id]}</p> : null}
+        {nextDesc[r.id] ? <p className="mt-1 text-xs text-slate-600">Sub-task: {nextDesc[r.id]}</p> : null}
       </Link>
     );
   };
