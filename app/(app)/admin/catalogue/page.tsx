@@ -23,8 +23,11 @@ type Item = {
   billing_flag: boolean;
   unit_cost: number;
   sop_id: string | null;
+  is_recurring?: boolean | null;
+  recurrence_frequency?: string | null;
+  recurrence_end_date?: string | null;
 };
-type AssignmentType = "department_pool" | "specific_user";
+const RECURRENCE_OPTIONS = ["2hr", "4hr", "6hr", "8hr", "12hr", "24hr", "Daily", "Weekly", "Monthly"] as const;
 
 type Checkpoint = {
   id?: string;
@@ -34,13 +37,20 @@ type Checkpoint = {
   dept_id: string;
   department_id?: string;
   description: string;
-  assignment_type: AssignmentType;
   assigned_user_id: string;
   is_recurring?: boolean;
   recurrence_frequency?: string;
   recurrence_end_date?: string;
   due_offset_minutes?: number;
 };
+
+function toDatetimeLocal(value?: string | null): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 export default function CataloguePage() {
   const [items, setItems] = useState<Item[]>([]);
@@ -71,16 +81,23 @@ export default function CataloguePage() {
     vendor_id: "",
     billing_flag: false,
     unit_cost: "0",
+    is_recurring: false,
+    recurrence_frequency: "24hr",
+    recurrence_end_date: "",
   });
   const makeClientId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const makeDefaultSubTask = (): Checkpoint => ({
+    client_id: makeClientId(),
+    dept_id: "",
+    description: "",
+    assigned_user_id: "",
+    is_recurring: form.is_recurring,
+    recurrence_frequency: form.recurrence_frequency,
+    recurrence_end_date: form.recurrence_end_date,
+    due_offset_minutes: 0,
+  });
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([
-    {
-      client_id: makeClientId(),
-      dept_id: "",
-      description: "",
-      assignment_type: "department_pool",
-      assigned_user_id: "",
-    },
+    makeDefaultSubTask(),
   ]);
 
   const loadData = async () => {
@@ -104,15 +121,18 @@ export default function CataloguePage() {
       if (!map[key]) map[key] = [];
       map[key].push({
         client_id: `${checkpoint.id ?? "cp"}-${checkpoint.step_number ?? 0}`,
-        dept_id: checkpoint.dept_id,
+        dept_id: checkpoint.department_id ?? checkpoint.dept_id ?? "",
+        department_id: checkpoint.department_id ?? checkpoint.dept_id ?? "",
         description: checkpoint.description,
         step_number: checkpoint.step_number,
         id: checkpoint.id,
-        assignment_type:
-          (checkpoint as { assignment_type?: string }).assignment_type === "specific_user"
-            ? "specific_user"
-            : "department_pool",
         assigned_user_id: (checkpoint as { assigned_user_id?: string | null }).assigned_user_id ?? "",
+        is_recurring: (checkpoint as { is_recurring?: boolean | null }).is_recurring ?? false,
+        recurrence_frequency: (checkpoint as { recurrence_frequency?: string | null }).recurrence_frequency ?? "24hr",
+        recurrence_end_date: toDatetimeLocal(
+          (checkpoint as { recurrence_end_date?: string | null }).recurrence_end_date
+        ),
+        due_offset_minutes: (checkpoint as { due_offset_minutes?: number | null }).due_offset_minutes ?? 0,
       });
     });
     setCheckpointsMap(map);
@@ -137,16 +157,11 @@ export default function CataloguePage() {
       vendor_id: "",
       billing_flag: false,
       unit_cost: "0",
+      is_recurring: false,
+      recurrence_frequency: "24hr",
+      recurrence_end_date: "",
     });
-    setCheckpoints([
-      {
-        client_id: makeClientId(),
-        dept_id: "",
-        description: "",
-        assignment_type: "department_pool",
-        assigned_user_id: "",
-      },
-    ]);
+    setCheckpoints([makeDefaultSubTask()]);
     setNameError(null);
   };
 
@@ -184,17 +199,6 @@ export default function CataloguePage() {
       });
       return;
     }
-    const badAssign = checkpoints.findIndex(
-      (step) => step.assignment_type === "specific_user" && !step.assigned_user_id.trim()
-    );
-    if (badAssign >= 0) {
-      setSaveMessage({
-        type: "err",
-        text: `Sub-task ${badAssign + 1}: choose a staff member for “Specific user” assignment.`,
-      });
-      return;
-    }
-
     const wasEdit = Boolean(editingId);
 
     void run(
@@ -210,12 +214,18 @@ export default function CataloguePage() {
           vendor_id: form.vendor_id || null,
           unit_cost: form.billing_flag ? Number(form.unit_cost || 0) : 0,
           billing_flag: form.billing_flag,
+          is_recurring: form.is_recurring,
+          recurrence_frequency: form.is_recurring ? form.recurrence_frequency : null,
+          recurrence_end_date: form.is_recurring ? form.recurrence_end_date || null : null,
           checkpoints: checkpoints.map((step) => ({
             dept_id: step.dept_id,
+            department_id: step.dept_id,
             description: step.description.trim(),
-            assignment_type: step.assignment_type,
-            assigned_user_id:
-              step.assignment_type === "specific_user" ? step.assigned_user_id.trim() || null : null,
+            assigned_user_id: step.assigned_user_id.trim() || null,
+            is_recurring: Boolean(step.is_recurring),
+            recurrence_frequency: step.is_recurring ? step.recurrence_frequency || null : null,
+            recurrence_end_date: step.is_recurring ? step.recurrence_end_date || null : null,
+            due_offset_minutes: Number(step.due_offset_minutes ?? 0),
           })),
         };
 
@@ -247,14 +257,21 @@ export default function CataloguePage() {
       vendor_id: item.vendor_id ?? "",
       billing_flag: item.billing_flag,
       unit_cost: String(item.unit_cost ?? 0),
+      is_recurring: item.is_recurring ?? false,
+      recurrence_frequency: item.recurrence_frequency ?? "24hr",
+      recurrence_end_date: toDatetimeLocal(item.recurrence_end_date),
     });
     setCheckpoints(
       (checkpointsMap[item.id] ?? []).map((step) => ({
         client_id: makeClientId(),
         dept_id: step.dept_id,
+        department_id: step.department_id ?? step.dept_id,
         description: step.description,
-        assignment_type: step.assignment_type ?? "department_pool",
         assigned_user_id: step.assigned_user_id ?? "",
+        is_recurring: step.is_recurring ?? (item.is_recurring ?? false),
+        recurrence_frequency: step.recurrence_frequency ?? item.recurrence_frequency ?? "24hr",
+        recurrence_end_date: step.recurrence_end_date ?? toDatetimeLocal(item.recurrence_end_date),
+        due_offset_minutes: step.due_offset_minutes ?? 0,
       }))
     );
     setNameError(null);
@@ -459,11 +476,47 @@ export default function CataloguePage() {
             <input value={form.unit_cost} onChange={(e) => setForm((prev) => ({ ...prev, unit_cost: e.target.value }))} placeholder="Unit Cost" type="number" min="0" step="0.01" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           ) : null}
 
+          <label className="flex items-center justify-between rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            Item recurring?
+            <input
+              type="checkbox"
+              checked={form.is_recurring}
+              onChange={(e) => setForm((prev) => ({ ...prev, is_recurring: e.target.checked }))}
+            />
+          </label>
+          {form.is_recurring ? (
+            <>
+              <select
+                value={form.recurrence_frequency}
+                onChange={(e) => setForm((prev) => ({ ...prev, recurrence_frequency: e.target.value }))}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              >
+                {RECURRENCE_OPTIONS.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="datetime-local"
+                value={form.recurrence_end_date}
+                onChange={(e) => setForm((prev) => ({ ...prev, recurrence_end_date: e.target.value }))}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </>
+          ) : null}
+
           <div className="space-y-2 rounded-lg border border-slate-200 p-2">
             <p className="text-xs font-semibold">Sub-tasks (minimum 1)</p>
             {checkpoints.map((step, index) => (
               <div key={step.client_id} className="space-y-1 rounded border border-slate-200 p-2">
-                <p className="text-xs font-medium">Step {index + 1}</p>
+                <p className="text-xs font-medium">Step order</p>
+                <input
+                  type="number"
+                  value={index + 1}
+                  disabled
+                  className="w-full rounded border border-slate-300 bg-slate-100 px-2 py-1 text-xs"
+                />
                 <select
                   value={step.dept_id}
                   onChange={(e) => {
@@ -473,7 +526,7 @@ export default function CataloguePage() {
                         i === index ? { ...cp, dept_id: v, assigned_user_id: "" } : cp
                       )
                     );
-                    if (step.assignment_type === "specific_user" && v) ensureStaffLoaded(v);
+                    if (v) ensureStaffLoaded(v);
                   }}
                   className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
                 >
@@ -484,32 +537,19 @@ export default function CataloguePage() {
                     </option>
                   ))}
                 </select>
+                <p className="text-xs font-medium">Name</p>
+                <input
+                  value={step.description}
+                  onChange={(e) =>
+                    setCheckpoints((prev) =>
+                      prev.map((cp, i) => (i === index ? { ...cp, description: e.target.value } : cp))
+                    )
+                  }
+                  placeholder="Sub-task name"
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                />
                 <label className="block text-xs text-slate-600">
-                  Assignment
-                  <select
-                    value={step.assignment_type}
-                    onChange={(e) => {
-                      const assignment_type = e.target.value === "specific_user" ? "specific_user" : "department_pool";
-                      setCheckpoints((prev) =>
-                        prev.map((cp, i) =>
-                          i === index
-                            ? {
-                                ...cp,
-                                assignment_type,
-                                assigned_user_id: assignment_type === "department_pool" ? "" : cp.assigned_user_id,
-                              }
-                            : cp
-                        )
-                      );
-                      if (assignment_type === "specific_user" && step.dept_id) ensureStaffLoaded(step.dept_id);
-                    }}
-                    className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                  >
-                    <option value="department_pool">Department pool (anyone in dept)</option>
-                    <option value="specific_user">Specific user</option>
-                  </select>
-                </label>
-                {step.assignment_type === "specific_user" ? (
+                  Assign to specific user (optional)
                   <select
                     value={step.assigned_user_id}
                     onFocus={() => step.dept_id && ensureStaffLoaded(step.dept_id)}
@@ -518,26 +558,92 @@ export default function CataloguePage() {
                         prev.map((cp, i) => (i === index ? { ...cp, assigned_user_id: e.target.value } : cp))
                       )
                     }
-                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                    className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
                   >
-                    <option value="">{step.dept_id ? "Select staff member" : "Choose department first"}</option>
+                    <option value="">Auto-assign</option>
                     {(staffByDept[step.dept_id] ?? []).map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.full_name || s.id}
                       </option>
                     ))}
                   </select>
+                </label>
+                <label className="flex items-center justify-between rounded border border-slate-300 px-2 py-1 text-xs">
+                  Recurring?
+                  <input
+                    type="checkbox"
+                    checked={Boolean(step.is_recurring)}
+                    onChange={(e) =>
+                      setCheckpoints((prev) =>
+                        prev.map((cp, i) =>
+                          i === index
+                            ? {
+                                ...cp,
+                                is_recurring: e.target.checked,
+                                recurrence_frequency: cp.recurrence_frequency ?? form.recurrence_frequency,
+                                recurrence_end_date: cp.recurrence_end_date ?? form.recurrence_end_date,
+                              }
+                            : cp
+                        )
+                      )
+                    }
+                  />
+                </label>
+                {step.is_recurring ? (
+                  <>
+                    <label className="block text-xs text-slate-600">
+                      Recurrence frequency
+                      <select
+                        value={step.recurrence_frequency ?? "24hr"}
+                        onChange={(e) =>
+                          setCheckpoints((prev) =>
+                            prev.map((cp, i) =>
+                              i === index ? { ...cp, recurrence_frequency: e.target.value } : cp
+                            )
+                          )
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                      >
+                        {RECURRENCE_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-xs text-slate-600">
+                      Repeat until
+                      <input
+                        type="datetime-local"
+                        value={step.recurrence_end_date ?? ""}
+                        onChange={(e) =>
+                          setCheckpoints((prev) =>
+                            prev.map((cp, i) =>
+                              i === index ? { ...cp, recurrence_end_date: e.target.value } : cp
+                            )
+                          )
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                      />
+                    </label>
+                  </>
                 ) : null}
-                <input
-                  value={step.description}
-                  onChange={(e) =>
-                    setCheckpoints((prev) =>
-                      prev.map((cp, i) => (i === index ? { ...cp, description: e.target.value } : cp))
-                    )
-                  }
-                  placeholder="Description"
-                  className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-                />
+                <label className="block text-xs text-slate-600">
+                  Due X minutes after item is raised
+                  <input
+                    type="number"
+                    min="0"
+                    value={step.due_offset_minutes ?? 0}
+                    onChange={(e) =>
+                      setCheckpoints((prev) =>
+                        prev.map((cp, i) =>
+                          i === index ? { ...cp, due_offset_minutes: Number(e.target.value || 0) } : cp
+                        )
+                      )
+                    }
+                    className="mt-0.5 w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </label>
                 <div className="flex gap-1">
                   <button type="button" onClick={() => moveStep(index, -1)} className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs">Up</button>
                   <button type="button" onClick={() => moveStep(index, 1)} className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs">Down</button>
@@ -551,11 +657,7 @@ export default function CataloguePage() {
                 setCheckpoints((prev) => [
                   ...prev,
                   {
-                    client_id: makeClientId(),
-                    dept_id: "",
-                    description: "",
-                    assignment_type: "department_pool",
-                    assigned_user_id: "",
+                    ...makeDefaultSubTask(),
                   },
                 ])
               }

@@ -6,7 +6,6 @@ type CheckpointInput = {
   dept_id: string;
   department_id?: string | null;
   description: string;
-  assignment_type?: string;
   assigned_user_id?: string | null;
   is_recurring?: boolean;
   recurrence_frequency?: string | null;
@@ -17,17 +16,13 @@ type CheckpointInput = {
 async function validateCheckpointAssignments(checkpoints: CheckpointInput[]) {
   for (let i = 0; i < checkpoints.length; i++) {
     const cp = checkpoints[i];
-    const assignmentType = cp.assignment_type === "specific_user" ? "specific_user" : "department_pool";
-    if (assignmentType === "specific_user") {
-      const uid = cp.assigned_user_id?.trim();
-      if (!uid) {
-        return `Sub-task ${i + 1}: choose a staff member for specific-user assignment.`;
-      }
+    const uid = cp.assigned_user_id?.trim();
+    if (uid) {
       const { data: map } = await adminClient
         .from("user_departments")
         .select("user_id")
         .eq("user_id", uid)
-        .eq("department_id", cp.dept_id)
+        .eq("department_id", cp.department_id ?? cp.dept_id)
         .maybeSingle();
       if (!map) {
         return `Sub-task ${i + 1}: the selected user must belong to the responsible department.`;
@@ -45,7 +40,7 @@ export async function GET() {
     adminClient
       .from("item_catalogue")
       .select(
-        "id, name, is_active, requires_patient, ordering_dept_id, dispatching_dept_id, vendor_id, billing_flag, unit_cost, sop_id"
+        "id, name, is_active, requires_patient, ordering_dept_id, dispatching_dept_id, vendor_id, billing_flag, unit_cost, sop_id, is_recurring, recurrence_frequency, recurrence_end_date"
       )
       .order("name"),
     adminClient.from("departments").select("id, name").order("name"),
@@ -56,7 +51,7 @@ export async function GET() {
       .order("title"),
     adminClient
       .from("item_checkpoint_definitions")
-      .select("id, catalogue_item_id, step_number, dept_id, description, assignment_type, assigned_user_id")
+      .select("id, catalogue_item_id, step_number, dept_id, department_id, description, assigned_user_id, is_recurring, recurrence_frequency, recurrence_end_date, due_offset_minutes")
       .order("step_number"),
   ]);
 
@@ -94,6 +89,9 @@ export async function POST(req: Request) {
       billing_flag: body.billing_flag ?? false,
       unit_cost: body.unit_cost ?? 0,
       sop_id: body.sop_id ?? null,
+      is_recurring: body.is_recurring ?? false,
+      recurrence_frequency: body.is_recurring ? body.recurrence_frequency ?? "24hr" : null,
+      recurrence_end_date: body.is_recurring ? body.recurrence_end_date ?? null : null,
     })
     .select("id")
     .single();
@@ -101,14 +99,18 @@ export async function POST(req: Request) {
   if (itemError || !item) return NextResponse.json({ error: itemError?.message ?? "Failed to create item" }, { status: 400 });
 
   const checkpointRows = checkpoints.map((checkpoint, index) => {
-    const assignmentType = checkpoint.assignment_type === "specific_user" ? "specific_user" : "department_pool";
     return {
       catalogue_item_id: item.id,
       step_number: index + 1,
       dept_id: checkpoint.dept_id,
+      department_id: checkpoint.department_id ?? checkpoint.dept_id,
       description: checkpoint.description,
-      assignment_type: assignmentType,
-      assigned_user_id: assignmentType === "specific_user" ? checkpoint.assigned_user_id!.trim() : null,
+      assignment_type: checkpoint.assigned_user_id?.trim() ? "specific_user" : "department_pool",
+      assigned_user_id: checkpoint.assigned_user_id?.trim() || null,
+      is_recurring: checkpoint.is_recurring ?? false,
+      recurrence_frequency: checkpoint.is_recurring ? checkpoint.recurrence_frequency ?? "24hr" : null,
+      recurrence_end_date: checkpoint.is_recurring ? checkpoint.recurrence_end_date ?? null : null,
+      due_offset_minutes: checkpoint.due_offset_minutes ?? 0,
     };
   });
 
@@ -150,6 +152,9 @@ export async function PATCH(req: Request) {
       billing_flag: body.billing_flag ?? false,
       unit_cost: body.unit_cost ?? 0,
       sop_id: body.sop_id ?? null,
+      is_recurring: body.is_recurring ?? false,
+      recurrence_frequency: body.is_recurring ? body.recurrence_frequency ?? "24hr" : null,
+      recurrence_end_date: body.is_recurring ? body.recurrence_end_date ?? null : null,
     })
     .eq("id", itemId);
 
@@ -162,14 +167,18 @@ export async function PATCH(req: Request) {
   if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 400 });
 
   const checkpointRows = checkpoints.map((checkpoint, index) => {
-    const assignmentType = checkpoint.assignment_type === "specific_user" ? "specific_user" : "department_pool";
     return {
       catalogue_item_id: itemId,
       step_number: index + 1,
       dept_id: checkpoint.dept_id,
+      department_id: checkpoint.department_id ?? checkpoint.dept_id,
       description: checkpoint.description,
-      assignment_type: assignmentType,
-      assigned_user_id: assignmentType === "specific_user" ? checkpoint.assigned_user_id!.trim() : null,
+      assignment_type: checkpoint.assigned_user_id?.trim() ? "specific_user" : "department_pool",
+      assigned_user_id: checkpoint.assigned_user_id?.trim() || null,
+      is_recurring: checkpoint.is_recurring ?? false,
+      recurrence_frequency: checkpoint.is_recurring ? checkpoint.recurrence_frequency ?? "24hr" : null,
+      recurrence_end_date: checkpoint.is_recurring ? checkpoint.recurrence_end_date ?? null : null,
+      due_offset_minutes: checkpoint.due_offset_minutes ?? 0,
     };
   });
   const { error: checkpointError } = await adminClient.from("item_checkpoint_definitions").insert(checkpointRows);
