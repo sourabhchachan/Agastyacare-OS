@@ -4,9 +4,14 @@ import { requirePermission } from "@/lib/auth/serverPermissions";
 
 type CheckpointInput = {
   dept_id: string;
+  department_id?: string | null;
   description: string;
   assignment_type?: string;
   assigned_user_id?: string | null;
+  is_recurring?: boolean;
+  recurrence_frequency?: string | null;
+  recurrence_end_date?: string | null;
+  due_offset_minutes?: number;
 };
 
 async function validateCheckpointAssignments(checkpoints: CheckpointInput[]) {

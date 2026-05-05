@@ -8,12 +8,23 @@ export async function isCheckpointAssignmentAdmin(admin: SupabaseClient, userId:
   return Boolean(m === true || b === true);
 }
 
-export type CheckpointInstanceRow = { id?: string; step_number: number; status: string };
+export type CheckpointInstanceRow = {
+  id?: string;
+  step_number: number;
+  status: string;
+  department_id?: string | null;
+  assigned_user_id?: string | null;
+};
 type CheckpointDefRow = {
   step_number: number;
   assignment_type: string | null;
   assigned_user_id: string | null;
   dept_id: string | null;
+  department_id: string | null;
+  is_recurring: boolean | null;
+  recurrence_frequency: string | null;
+  recurrence_end_date: string | null;
+  due_offset_minutes: number | null;
 };
 
 /** Current actionable checkpoint: pending with no incomplete predecessor. */

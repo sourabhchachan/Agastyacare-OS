@@ -12,13 +12,20 @@ type Def = {
   step_number: number;
   description: string;
   dept_id: string | null;
+  department_id?: string | null;
   assignment_type?: string | null;
   assigned_user_id?: string | null;
+  is_recurring?: boolean | null;
+  recurrence_frequency?: string | null;
+  recurrence_end_date?: string | null;
+  due_offset_minutes?: number | null;
 };
 type Cp = {
   id: string;
   step_number: number;
   status: string;
+  department_id?: string | null;
+  assigned_user_id?: string | null;
   actor_name: string | null;
   actioned_time: string | null;
   proof_note: string | null;

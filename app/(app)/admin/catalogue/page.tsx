@@ -32,9 +32,14 @@ type Checkpoint = {
   step_number?: number;
   client_id: string;
   dept_id: string;
+  department_id?: string;
   description: string;
   assignment_type: AssignmentType;
   assigned_user_id: string;
+  is_recurring?: boolean;
+  recurrence_frequency?: string;
+  recurrence_end_date?: string;
+  due_offset_minutes?: number;
 };
 
 export default function CataloguePage() {
