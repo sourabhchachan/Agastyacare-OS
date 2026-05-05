@@ -10,6 +10,7 @@ import { UserFacingError } from "@/lib/feedback/userFacingError";
 type KRA = { id: string; title: string; description: string | null; is_active: boolean };
 type KPI = { id: string; title: string; measurement_unit: string | null; kra_id: string; is_active: boolean };
 type SOP = { id: string; title: string; description: string | null; kpi_id: string; is_active: boolean };
+type CatalogueItem = { id: string; name: string; sop_id: string | null; is_active: boolean };
 
 type NodeSelection =
   | { type: "kra"; id: string }
@@ -22,6 +23,7 @@ export default function FrameworkPage() {
   const [kras, setKras] = useState<KRA[]>([]);
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [sops, setSops] = useState<SOP[]>([]);
+  const [items, setItems] = useState<CatalogueItem[]>([]);
   const [selected, setSelected] = useState<NodeSelection>(null);
   const [expandedKra, setExpandedKra] = useState<Record<string, boolean>>({});
   const [expandedKpi, setExpandedKpi] = useState<Record<string, boolean>>({});
@@ -36,14 +38,16 @@ export default function FrameworkPage() {
   const [newKpiUnit, setNewKpiUnit] = useState("");
   const [newSopTitle, setNewSopTitle] = useState("");
   const [newSopDescription, setNewSopDescription] = useState("");
+  const [selectedItemToLink, setSelectedItemToLink] = useState("");
 
   const loadData = async () => {
     const response = await fetch("/api/admin/framework");
     if (!response.ok) throw new UserFacingError(await humanizeResponseError(response));
-    const result = (await response.json()) as { kras: KRA[]; kpis: KPI[]; sops: SOP[] };
+    const result = (await response.json()) as { kras: KRA[]; kpis: KPI[]; sops: SOP[]; items: CatalogueItem[] };
     setKras(result.kras ?? []);
     setKpis(result.kpis ?? []);
     setSops(result.sops ?? []);
+    setItems(result.items ?? []);
   };
 
   useEffect(() => {
@@ -154,6 +158,40 @@ export default function FrameworkPage() {
         await loadData();
       },
       { successMessage: "Saved" }
+    );
+  };
+
+  const linkItemToSolution = () => {
+    if (!selected || selected.type !== "sop" || !selectedItemToLink) return;
+    void run(
+      `fw-link-item-${selected.id}`,
+      async () => {
+        const response = await fetch("/api/admin/framework", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "link_item", sopId: selected.id, itemId: selectedItemToLink }),
+        });
+        if (!response.ok) throw new UserFacingError(await humanizeResponseError(response));
+        setSelectedItemToLink("");
+        await loadData();
+      },
+      { successMessage: "Item linked to solution" }
+    );
+  };
+
+  const unlinkItemFromSolution = (sopId: string, itemId: string) => {
+    void run(
+      `fw-unlink-item-${itemId}`,
+      async () => {
+        const response = await fetch("/api/admin/framework", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "unlink_item", sopId, itemId }),
+        });
+        if (!response.ok) throw new UserFacingError(await humanizeResponseError(response));
+        await loadData();
+      },
+      { successMessage: "Item unlinked from solution" }
     );
   };
 
@@ -324,6 +362,56 @@ export default function FrameworkPage() {
               >
                 {isPending("fw-save") ? "Saving…" : "Save"}
               </button>
+
+              {selected.type === "sop" ? (
+                <div className="space-y-2 rounded-lg border border-slate-200 p-2">
+                  <p className="text-xs font-semibold">Link catalogue items</p>
+                  <select
+                    value={selectedItemToLink}
+                    onChange={(e) => setSelectedItemToLink(e.target.value)}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="">Select item to link</option>
+                    {items
+                      .filter((item) => item.is_active && (item.sop_id === null || item.sop_id !== selected.id))
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={linkItemToSolution}
+                    disabled={!selectedItemToLink || isPending(`fw-link-item-${selected.id}`)}
+                    className="w-full rounded bg-[#1B4F8A] px-2 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                  >
+                    {isPending(`fw-link-item-${selected.id}`) ? "Linking…" : "Link item"}
+                  </button>
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium">Linked items</p>
+                    {items.filter((item) => item.sop_id === selected.id).length === 0 ? (
+                      <p className="text-xs text-slate-500">No items linked.</p>
+                    ) : (
+                      items
+                        .filter((item) => item.sop_id === selected.id)
+                        .map((item) => (
+                          <div key={item.id} className="flex items-center justify-between rounded border border-slate-200 px-2 py-1">
+                            <span className="text-xs">{item.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => unlinkItemFromSolution(selected.id, item.id)}
+                              disabled={isPending(`fw-unlink-item-${item.id}`)}
+                              className="text-xs text-rose-700 disabled:opacity-50"
+                            >
+                              {isPending(`fw-unlink-item-${item.id}`) ? "Removing…" : "Remove"}
+                            </button>
+                          </div>
+                        ))
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : (
             <p className="mt-2 text-xs text-slate-500">Pick a Problem, Indicator, or Solution from the tree.</p>
