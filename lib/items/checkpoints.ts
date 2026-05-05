@@ -12,7 +12,7 @@ export async function insertCheckpointInstancesForInstance(
     .order("step_number", { ascending: true });
 
   if (defErr) throw defErr;
-  if (!defs?.length) throw new Error("Catalogue item has no checkpoint definitions");
+  if (!defs?.length) throw new Error("Catalogue item has no sub-task definitions");
 
   const ordered = [...defs].sort((a, b) => a.step_number - b.step_number);
   const rows = ordered.map((d, index) => ({

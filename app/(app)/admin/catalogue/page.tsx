@@ -166,7 +166,7 @@ export default function CataloguePage() {
       return;
     }
     if (checkpoints.length < 1) {
-      setSaveMessage({ type: "err", text: "Add at least one checkpoint." });
+      setSaveMessage({ type: "err", text: "Add at least one sub-task." });
       return;
     }
     const badCheckpoint = checkpoints.findIndex(
@@ -175,7 +175,7 @@ export default function CataloguePage() {
     if (badCheckpoint >= 0) {
       setSaveMessage({
         type: "err",
-        text: `Checkpoint ${badCheckpoint + 1}: choose a department and enter a description.`,
+        text: `Sub-task ${badCheckpoint + 1}: choose a department and enter a description.`,
       });
       return;
     }
@@ -185,7 +185,7 @@ export default function CataloguePage() {
     if (badAssign >= 0) {
       setSaveMessage({
         type: "err",
-        text: `Checkpoint ${badAssign + 1}: choose a staff member for “Specific user” assignment.`,
+        text: `Sub-task ${badAssign + 1}: choose a staff member for “Specific user” assignment.`,
       });
       return;
     }
@@ -365,7 +365,7 @@ export default function CataloguePage() {
             (yes/no), <span className="font-medium">Ordering Department</span>,{" "}
             <span className="font-medium">Dispatching Department</span> (department names, optional cells empty),{" "}
             <span className="font-medium">Vendor</span> (optional), <span className="font-medium">Billing</span> (yes/no),{" "}
-            <span className="font-medium">Unit Cost</span> (optional number). Checkpoints must be added after import.
+            <span className="font-medium">Unit Cost</span> (optional number). Sub-tasks must be added after import.
           </p>
           <button type="button" onClick={downloadTemplate} className="w-full rounded-lg border border-[#1B4F8A] px-3 py-2 text-sm font-semibold text-[#1B4F8A]">Download blank Excel template</button>
           <input
@@ -455,7 +455,7 @@ export default function CataloguePage() {
           ) : null}
 
           <div className="space-y-2 rounded-lg border border-slate-200 p-2">
-            <p className="text-xs font-semibold">Checkpoints (minimum 1)</p>
+            <p className="text-xs font-semibold">Sub-tasks (minimum 1)</p>
             {checkpoints.map((step, index) => (
               <div key={step.client_id} className="space-y-1 rounded border border-slate-200 p-2">
                 <p className="text-xs font-medium">Step {index + 1}</p>
@@ -556,7 +556,7 @@ export default function CataloguePage() {
               }
               className="w-full rounded border border-[#1B4F8A] px-2 py-1 text-xs font-semibold text-[#1B4F8A]"
             >
-              + Add checkpoint
+              + Add sub-task
             </button>
           </div>
 

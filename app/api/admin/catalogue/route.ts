@@ -16,7 +16,7 @@ async function validateCheckpointAssignments(checkpoints: CheckpointInput[]) {
     if (assignmentType === "specific_user") {
       const uid = cp.assigned_user_id?.trim();
       if (!uid) {
-        return `Checkpoint ${i + 1}: choose a staff member for specific-user assignment.`;
+        return `Sub-task ${i + 1}: choose a staff member for specific-user assignment.`;
       }
       const { data: map } = await adminClient
         .from("user_departments")
@@ -25,7 +25,7 @@ async function validateCheckpointAssignments(checkpoints: CheckpointInput[]) {
         .eq("department_id", cp.dept_id)
         .maybeSingle();
       if (!map) {
-        return `Checkpoint ${i + 1}: the selected user must belong to the responsible department.`;
+        return `Sub-task ${i + 1}: the selected user must belong to the responsible department.`;
       }
     }
   }
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
   const requiresPatient = body.requires_patient === undefined ? true : Boolean(body.requires_patient);
 
   if (!body.name || checkpoints.length < 1) {
-    return NextResponse.json({ error: "Name and at least one checkpoint are required" }, { status: 400 });
+    return NextResponse.json({ error: "Name and at least one sub-task are required" }, { status: 400 });
   }
   const assignErr = await validateCheckpointAssignments(checkpoints);
   if (assignErr) return NextResponse.json({ error: assignErr }, { status: 400 });
