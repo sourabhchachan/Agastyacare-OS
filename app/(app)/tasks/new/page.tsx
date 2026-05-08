@@ -8,6 +8,8 @@ import { humanizeResponseError } from "@/lib/feedback/humanizeError";
 import { UserFacingError } from "@/lib/feedback/userFacingError";
 import { useAsyncAction } from "@/lib/feedback/useAsyncAction";
 
+export const dynamic = "force-dynamic";
+
 type StaffOption = { id: string; full_name: string; is_active: boolean };
 type PatientOption = { id: string; name: string; patient_number: string; bed_number: string };
 type SolutionOption = { id: string; title: string; kpi?: { title?: string; kra?: { title?: string } } };

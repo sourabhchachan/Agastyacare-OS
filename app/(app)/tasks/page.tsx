@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { TaskCard, type TaskPriority } from "@/components/TaskCard";
 
+export const dynamic = "force-dynamic";
+
 type Status = "all" | "pending" | "in_progress" | "completed" | "cancelled";
 type SortMode = "priority" | "due";
 type Task = {
